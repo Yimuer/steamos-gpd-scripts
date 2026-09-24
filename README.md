@@ -2,7 +2,7 @@
 
 > **更适合中国宝宝和各路 win 掌机的 steamos 出路**
 
-**仓库地址**：https://github.com/Yimuer/steamos-gpd-scripts
+**仓库地址**：https://github.com/Yimuer/steamos-gpd-scripts　·　**许可**：GPL-3.0
 
 把「SteamOS / Win 掌机重装系统后，要从零配一遍」这件事，变成**跑几条命令**。
 
@@ -126,6 +126,30 @@ CHANGELOG.md             版本记录
 
 ## 八、许可
 
-[MIT](LICENSE) —— 随便用，出问题别找我 :)
+**GPL-3.0**（见 [LICENSE](LICENSE)）—— 2026-09-25 由 MIT 改为 GPL-3.0。
+
+```
+适配 GPD 的 SteamOS 脚本
+Copyright (C) 2026 Yimuer
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option)
+any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+```
+
+对使用者意味着什么：
+
+- ✅ 自己用、自己改、自己跑 —— **没有任何义务**（GPL 的义务只在"分发"时才触发）
+- ✅ 装 NextKde 这类 GPL 程序、或让本脚本去安装它们 —— 不影响本项目的许可
+- ⚠️ 如果你**Fork 后改了再发布**，那份衍生作品**必须同样用 GPL-3.0 开源**，并保留署名
+- ⚠️ 想**借用本项目的代码**去闭源发布 —— 不允许（这正是 GPL 与 MIT 的关键区别）
+- ⚠️ 反过来：本项目**不会**被第三方 GPL 代码"传染"—— 因为本仓库不复制任何 GPL 源码，
+  只是安装/调用它们（单纯聚合，不构成衍生作品）
 
 ---
