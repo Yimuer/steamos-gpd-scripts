@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- 重装后先运行我 - 启动器图标 (橙红渐变底 + 白色运行三角) -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff8a3c"/>
+      <stop offset="1" stop-color="#e5342a"/>
+    </linearGradient>
+  </defs>
+  <rect x="14" y="14" width="228" height="228" rx="52" fill="url(#g)" stroke="#8a1f14" stroke-width="10"/>
+  <path d="M94 74 L186 128 L94 182 Z" fill="#ffffff"/>
+  <rect x="60" y="196" width="136" height="14" rx="7" fill="#ffffff" opacity="0.92"/>
+</svg>
