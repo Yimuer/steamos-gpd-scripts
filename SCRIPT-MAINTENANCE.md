@@ -1217,8 +1217,8 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
 | 项 | 数字 |
 |---|---|
 | 主脚本 `steamos-setup.sh` | **3029 行** |
-| `steamos-nix/scripts/steamos-setup.sh` | 2660 行，**与主脚本约 80% 相同** |
-| `steamos-nix/scripts/` 下与主目录同名的脚本 | **17 个**（整个 `steamos-nix/` 共 78 文件） |
+| `steamos-nix/scripts/steamos-setup.sh` | 2660 行，与主脚本约 80% 相同 —— **但它是 nix 的固定源树，不能删**（见下） |
+| `steamos-nix/scripts/` 下与主目录同名的脚本 | 17 个（整个 `steamos-nix/` 共 78 文件）—— **同上，属 nix derivation 的输入** |
 | 4 个 `install-*-home.sh` | 各 441~489 行，共用同一套骨架（`info/ok/warn/err/sub`、`main`、`do_install`、`do_check`、`run_root` 各 4 份） |
 | `archive/` | 两个历史版本存档（2625 + 1287 行）—— **有意保留** |
 | `__pycache__` / `*.pyc` | 已被 `.gitignore` 挡住，仓库里 0 个 ✔ |
@@ -1227,7 +1227,8 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
 
 | # | 做什么 | 收益 | 代价 / 风险 | 建议 |
 |---|---|---|---|---|
-| 1 | **把 `steamos-nix/` 拆成独立仓库**；或精简为只留 nix 特有的 `flake.nix`/`lib.nix`/`machine.nix`/`home-module.nix`，删掉 17 个重复脚本副本 + 那份 2660 行的主脚本副本 | 仓库体积与重复度**立刻降一大半**；主线与试验线互不干扰 | 需建第二个仓库；或删除前确认 nix 线确实不再维护 | **推荐先做**（零代码风险） |
+| 1 | **把 `steamos-nix/` 整体迁到独立仓库**（不再精简/删除） | 主线清爽；nix 线完整保留 | 需要建第二个仓库（当前 fine-grained token 只能动这一个仓库，建仓要 classic PAT 或网页操作） | **首选**，但需你配合建仓库 |
+| 1b | （若暂时不迁）保留现状 + `steamos-nix/README.md` 已写明"重复是故意的、别去重" | 零风险，防止以后有人误删 | 仓库体积不变 | **已做**（2026-09-25） |
 | 2 | **4 个 `install-*-home.sh` 合并为「单引擎 + 每应用一份 profile」**：`install-app-home.sh <app>`，profile 里写「下载 URL 形态 / 解包方式 / 落点是 /home 还是 /opt / 入口与图标发现规则 / 系统依赖 / check 判据」 | 消除约 480 行重复；**仍然只有一个文件，自包含性不丢**；新增同类应用变成"加一段 profile" | 4 个已验证脚本要重构成 1 个，并**全部重测**（Firefox tar.xz / dsh AppImage / WPS deb / LocalSend） | 收益最大，但需专门一轮回归 |
 | 3 | **步骤表驱动**：一张 `STEPS` 表定义「函数名 / 编号 / 关键词 / 标题 / 落地判据」，让 `step_label`、`map_step`、`FUNCS`、help 全部由表派生 | 加一个步骤从**改 9 处**变成**改 1~2 处**，不会再漏接注册点（历史上 README 步骤列表、本节的步骤表都曾漏更新） | 动主脚本的核心分发逻辑；`verify_step` 是函数式判据，可能只能半自动化 | 收益高，风险中等 |
 | 4 | **两份 README 归一**：`README.txt`（313 行详细用法）改名 `使用说明.txt`，只留 `README.md` 作为唯一入口 | 消除"两份说明书"的漂移风险（GitHub 只渲染 `.md`） | 需更新交叉引用 | 小改动，可做 |
@@ -1239,6 +1240,27 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
   注意：若做了 #2 单引擎，就**不需要** `lib/` 了 —— 重复被彻底消除，这是更优的解法。
 - **不硬拆主脚本**（3029 行）："唯一必需 + 自包含"是设计前提，拆开就得带一堆文件。
   要降复杂度请走 #3 表驱动，而不是拆文件。
+
+### 10.3b 一个**纠正**：`steamos-nix/scripts/` 不是"可删的重复副本"
+
+第一版路线图（10.2 的 #1）曾建议"删掉 17 个重复脚本 + 那份 2660 行副本"，**这个判断是错的**，已在动手前查证纠正：
+
+`nix/lib.nix` 的 `steamos-tools` derivation 是这么写的：
+
+```nix
+# ── 1. steamos-tools: every .sh/.py in scripts/, deps injected ──
+for f in "$src"/scripts/*.sh; do ... install -m 0755 "$f" "$out/bin/$b"
+for f in "$src"/scripts/*.py; do ...
+```
+
+即 **nix 会把 `scripts/` 下每个脚本都装进它自己的 `$out/bin`**；而 nix 的 `src` 是**参与哈希的固定源树**
+（可复现构建的前提），所以这条线必须自带一份"当时那一版"的脚本，不能指向主目录。
+
+删任何一个都会连带影响：① `steamos-tools` 少部署对应工具；② `verify.sh`（它检查 `steamos-setup.sh` 等是否存在）；
+③ `.selftest/static-audit.py`（直接读取 `scripts/steamos-setup.sh`）。
+
+**教训**：看到"重复"先查清楚是不是哪条构建链的输入，再决定能不能删。
+这条已写进 `steamos-nix/README.md`，防止以后再犯。
 
 ### 10.4 已处理的杂项
 
