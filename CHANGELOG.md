@@ -6,6 +6,25 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [3.4.0] - 2026-09-25
+
+### 新增: 可选组件 —— 鸿蒙字体 HarmonyOS Sans 装成系统字体
+- 新增 `install-harmony-sans-home.sh`: 字体装进 `~/.local/share/fonts`(**扛原子升级**),
+  配置写进 `~/.config/fontconfig/conf.d/10-harmony-sans.conf`。
+- **为什么不用 AUR 的 `ttf-harmonyos-sans`**: 实测它装到 `/usr/share/fonts`(rootfs, 升级必被冲),
+  且取源是华为 CDN 的**签名直链**(路径带时间戳+哈希)会过期 → 本脚本不写死地址,
+  改由 `HARMONY_ZIP`(自备 zip, 推荐)或 `HARMONY_URL` 提供, 缺包时给出取源指引。
+- **实测过的字体包结构(2026.06.12, 21MB / 17 条目)**, 两处反直觉, 已写进脚本注释:
+  1. **拉丁与中文是两个文件** —— `HarmonyOS_Sans.ttf`(家族 `HarmonyOS Sans`, 0.3MB,
+     含 Italic/Condensed) 与 `HarmonyOS_Sans_SC.ttf`(家族 `HarmonyOS Sans SC`, 19.7MB)。
+     → 只挑"名字带 SC 的"会把拉丁和斜体全丢掉; 故 SC 变体 = "拉丁全家 + SC", 排除 TC。
+  2. **16 个 ttf 里 8 个是苹果垃圾**(`__MACOSX/`、`._*` AppleDouble、`.DS_Store`), 且目录名带空格。
+- 三条设计约束(`check.sh` 断言 2.11 盯着, 改错就红):
+  字体必须在 `/home`; fontconfig 必须落 `conf.d/`(**不覆盖**用户已有的 `fonts.conf`);
+  **monospace 绝不能写 prefer**(鸿蒙是比例字体, 顶替会让终端/代码字体错乱)。
+- 另修自身一个小 bug: `--force` 原本是个空开关(设了变量却没用), 现已接入
+  "已装好则跳过"的判断, 加 `--force` 才重解包重装。
+
 ## [3.3.0] - 2026-09-25
 
 ### 许可变更: MIT → **GPL-3.0**

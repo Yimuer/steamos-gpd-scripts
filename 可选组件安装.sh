@@ -23,24 +23,27 @@ REAL_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6)"
 [ -n "$REAL_HOME" ] || REAL_HOME="/home/$REAL_USER"
 
 # ── 可选项注册表 ──
-MENU_ORDER=(wechat firefox-nightly dsh-desktop wps-office)
+MENU_ORDER=(wechat firefox-nightly dsh-desktop wps-office harmony-sans)
 declare -A MENU_NAME=(
     [wechat]="微信 (官方原生版沙盒封装 wechat-universal-bwrap, 含中文字体)"
     [firefox-nightly]="Firefox Nightly (官方包解到 /home: 不占 rootfs、无沙箱、扛原子升级)"
     [dsh-desktop]="DeepSeek Harness 桌面版 (Tauri; 官方 AppImage 解到 /home, 不占 rootfs)"
-    [wps-office]="WPS Office 中文版 (官方 deb → /opt; 1.55GB 不占 rootfs、扛原子升级)"
+    [wps-office]="WPS Office 中文版 (官方 deb → /opt; 2GB 不占 rootfs、扛原子升级)"
+    [harmony-sans]="鸿蒙字体 HarmonyOS Sans (装进 /home 扛升级; 需自备官方 zip)"
 )
 declare -A MENU_PKGS=(
     [wechat]="wechat-universal-bwrap"
     [firefox-nightly]="firefox-nightly"
     [dsh-desktop]="deepseek-harness-desktop"
     [wps-office]="wps-office"
+    [harmony-sans]="harmonyos-sans"
 )
 # 可选: 自定义"是否已装"判据(函数名)。不设则用 pacman 查 MENU_PKGS 的包名。
 declare -A MENU_CHECK=(
     [firefox-nightly]="ffn_installed"
     [dsh-desktop]="dshdesk_installed"
     [wps-office]="wps_installed"
+    [harmony-sans]="harmony_installed"
 )
 
 pkg_installed() { pacman -Qq "$1" >/dev/null 2>&1; }
@@ -51,6 +54,11 @@ ffn_installed() { [ -x "$REAL_HOME/.local/opt/firefox-nightly/firefox/firefox" ]
 dshdesk_installed() { [ -e "$REAL_HOME/.local/opt/deepseek-harness-desktop/app/AppRun" ]; }
 # wps-office 装到 /opt(本体)+~/.local(入口), 都不是 pacman 包
 wps_installed() { [ -x "$REAL_HOME/.local/bin/wps" ] && [ -d /opt/kingsoft/wps-office/office6 ]; }
+# 鸿蒙字体装到 ~/.local/share/fonts + fontconfig 的 conf.d/
+harmony_installed() {
+    [ -d "$REAL_HOME/.local/share/fonts/harmonyos-sans-sc" ] && \
+    [ -f "$REAL_HOME/.config/fontconfig/conf.d/10-harmony-sans.conf" ]
+}
 
 # ── 各组件安装函数 ──
 install_wechat() {
@@ -142,6 +150,23 @@ install_wps_office() {
     bash "$s"
 }
 
+install_harmony_sans() {
+    # 同上: 逻辑都在独立脚本里, 这里薄封装
+    local s
+    s="$(cd "$(dirname "$0")" && pwd)/install-harmony-sans-home.sh"
+    if [ ! -f "$s" ]; then
+        echo "  [✗] 找不到 $s"
+        return 1
+    fi
+    echo "  · 调用 install-harmony-sans-home.sh (装进 ~/.local/share/fonts, 扛原子升级)"
+    echo "    ⚠ 华为官方 zip 直链带时间戳签名、会过期, 所以脚本没写死地址:"
+    echo "      先自己下好 zip, 然后  HARMONY_ZIP=/路径/xxx.zip bash 可选组件安装.sh"
+    echo "      或  HARMONY_URL='https://...zip' bash 可选组件安装.sh"
+    echo "      取源页: https://developer.huawei.com/consumer/cn/design/resource/"
+    # 注: 菜单不转发参数; 要用 --check/--force 请直接跑那个独立脚本
+    bash "$s"
+}
+
 # ── 菜单循环 ──
 while true; do
     echo
@@ -176,6 +201,7 @@ while true; do
             firefox-nightly) install_firefox_nightly ;;
             dsh-desktop) install_dsh_desktop ;;
             wps-office) install_wps_office ;;
+            harmony-sans) install_harmony_sans ;;
             *) echo "  [!] $key 尚未实现" ;;
         esac
     done
