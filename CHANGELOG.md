@@ -6,6 +6,17 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [2.0.0] - 2026-09-24
+
+### 新增: 步骤[13] wiliwili(B站第三方客户端, 必装) —— 主版本号升级: 步骤结构 12→13
+- 官方 x86_64 Linux 仅发 flatpak 单文件包 → flatpak --user 安装, 落在 /home
+  原子升级不冲; bundle 运行时依赖走 flathub 用户远端(境内首次较慢, 一次性)
+- 下载走 gh 镜像优先(ghfast/gh-proxy/ghproxy/直连), API 失败兜底 v1.6.0
+- root 环境下以真实用户身份执行 flatpak --user(避免装进 root 家目录)
+- verify: 按 ~/.local/share/flatpak/app 目录名判(不依赖具体 app-id)
+- 步骤全链路接入: step_label/verify_step/map_step(13|wiliwili|bili)/
+  两处 FUNCS/help/头部注释/check.sh 断言清单
+
 ## [1.4.1] - 2026-09-24
 
 ### 新增: 开机慢诊断工具
