@@ -311,7 +311,10 @@ fix-inputplumber-cycle.sh
    - tools/            可选放一个 shellcheck(.exe) 在这里, check.sh 会自动用它
    - archive/          历史版本存档(0909 原版 / lean 精简版), 不会被执行
    - disabled/         按约束禁用的输入法相关脚本存档
-   - steamos-nix/      nix 迁移试验分支(与主脚本互不影响)
+   - steamos-nix/      nix 探路分支(已冻结, 主线不依赖; 它的两大产出已被主线吸收:
+                       "什么会被冲掉"的分区表 → 见本文件顶部的第一条铁律;
+                       鸿蒙字体打包踩的坑 → 做可选组件鸿蒙字体时原样复用)
+                       它 scripts/ 下的脚本与主目录重复是 nix 可复现构建所需, 不要去重
 
 4. 健壮性修复(2026-09-24, 全部脚本 shellcheck warning 级 = 0):
    - 递归删除路径加非空护栏(${VAR:?}) —— 变量为空时宁可报错, 也别 rm -rf "/"

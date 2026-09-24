@@ -116,16 +116,42 @@ bash verify-upstreams.sh   # 发布前/重装前跑：一次探完所有外部�
 
 ```
 steamos-setup.sh         主脚本(唯一必需, 自包含; 步骤 1~14)
-可选组件安装.sh           可选项菜单(微信/Firefox/dsh 桌面版/WPS)
+可选组件安装.sh           可选项菜单(微信/Firefox/dsh 桌面版/WPS/鸿蒙字体)
 install-*-home.sh        各应用的"装进 /home 或 /opt"独立脚本(单文件可独立拷贝)
 self-heal-after-upgrade.sh  开机自愈钩子(由步骤 12 部署在 /home)
 check.sh / verify-upstreams.sh   自检 / 上游体检
+steamos-nix/             探路分支(已冻结, 主线不依赖; 详见下节)
 README.txt               详细说明(本文件是它的精简版)
 SCRIPT-MAINTENANCE.md    维护手册: 每个坑的来龙去脉、改脚本前必读
 CHANGELOG.md             版本记录
 ```
 
-## 八、许可
+## 八、关于 `steamos-nix/`（探路分支，已冻结）
+
+这是 2026-09-15~16 做的**另一条技术路线的试验**：用 nix（`flake.nix` + `nix/lib.nix`）把整个用户态环境
+搬进持久化的 `/nix/store`，想彻底躲过 SteamOS 的原子升级 —— 升级后只缺 `/etc` 那层符号链接，
+`steamos-nix-activate` 离线秒级重建即可。
+
+**后来没有采用**，原因说出来挺有意思：做 nix 的那次调查**自己产出了让它变得不必要的结论**。
+调查发现 `/opt`、`/usr/local`、`/root`、`/srv` 同样 bind-mount 到 home 分区（就是本文件 §一 那张表），
+绝大部分东西本来就幸存。于是主线用「官方便携包 → `/home` 或 `/opt` + 入口放 `~/.local`
++ 必须写 `/etc` 的登记自愈」就达到了"升级后零操作"；而 nix 的代价一个都没少 ——
+要先装 nix、每个包都得重写 nix 表达式、还要和 pacman **双包管理并存**。
+**痛点被主线自己的发现消解了，nix 的收益消失大半，代价却还在。**
+
+它不是"没做完的半成品"，而是一次**成功的探路**，产出已经被主线吸收：
+
+| nix 分支的产出 | 主线怎么用 |
+|---|---|
+| "什么会被冲掉"那张分区表 | 本文件 **§一 核心思路** 就是从它提炼的 |
+| 鸿蒙字体打包踩的坑（zip 目录带空格、`__MACOSX`/`._*` 苹果垃圾、SC/TC 分辨、fontconfig 只给 sans/serif 写 prefer 不动 monospace） | 做可选组件「鸿蒙字体」时**原样复用**，没有它就会再踩一遍 |
+| WPS / 微信 / LocalSend 的打包方法、selftest 的写法 | 参考价值 |
+
+**状态**：冻结，**主线从不调用它**（本仓库的主 README 以外，主线脚本与它零耦合）。
+⚠️ 它 `scripts/` 下的脚本与主目录重复是**故意的** —— nix 的 `src` 是参与哈希的固定源树，
+`steamos-tools` 会把每个 `.sh`/`.py` 装进自己的 `$out/bin`。**不要去重**，详见 `steamos-nix/README.md`。
+
+## 九、许可
 
 **GPL-3.0**（见 [LICENSE](LICENSE)）—— 2026-09-25 由 MIT 改为 GPL-3.0。
 
