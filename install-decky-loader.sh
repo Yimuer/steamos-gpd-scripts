@@ -127,8 +127,10 @@ if [ "$DO_STATUS" -eq 1 ]; then
 	else
 		printf "  开机自启   : 未启用\n"
 	fi
-	ls -1 "${HOMEBREW_FOLDER}/plugins/" 2>/dev/null | grep -v '^\.' |
-		sed 's/^/  插件: /' || true
+	# 用 glob 而不是 ls|grep: 插件目录名可能含空格等字符
+	for _p in "${HOMEBREW_FOLDER}"/plugins/*/; do
+		[ -d "$_p" ] && printf '  插件: %s\n' "$(basename "$_p")"
+	done
 	exit 0
 fi
 
