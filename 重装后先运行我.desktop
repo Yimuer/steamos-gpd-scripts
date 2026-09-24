@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=重装后先运行我（一键重建环境）
+Name[en]=Run me first after SteamOS reinstall
+Comment=双击运行 steamos-setup.sh：自动提权、断点续传、逐个重建重装后的环境
+# %k = 本 .desktop 文件的路径 → 自动 cd 到脚本所在目录(备份包放哪都能用)
+Exec=konsole --hold -e /bin/bash -c 'cd "$(dirname "%k")" 2>/dev/null || cd "$HOME/Downloads/steamos-reinstall-backup" || exit 1; bash ./steamos-setup.sh; rc=$?; echo; echo "──── 结束：退出码 $rc （检查输出后可直接关闭窗口）────"'
+TryExec=konsole
+Icon=utilities-terminal
+Terminal=false
+Categories=System;
