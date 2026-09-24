@@ -143,6 +143,26 @@ if [ -f install-wps-office-home.sh ]; then
 else
     bad "install-wps-office-home.sh 缺失"
 fi
+# 2.11 可选组件: 鸿蒙字体 —— 三条不能退让的约定
+if [ -f install-harmony-sans-home.sh ]; then
+    pass "install-harmony-sans-home.sh 存在"
+    bash -n install-harmony-sans-home.sh 2>/dev/null || bad "install-harmony-sans-home.sh 语法错误"
+    grep -q 'FONT_DIR="$REAL_HOME/.local/share/fonts' install-harmony-sans-home.sh \
+        && pass "字体装到 /home(原子升级幸存的前提)" \
+        || bad "字体目标被改出 /home —— AUR 那套装到 /usr/share/fonts, 升级必被冲"
+    grep -q 'FC_DIR="$REAL_HOME/.config/fontconfig/conf.d"' install-harmony-sans-home.sh \
+        && pass "fontconfig 落 conf.d/(不覆盖用户已有的 fonts.conf)" \
+        || bad "fontconfig 落点变了 —— 直接写 fonts.conf 会覆盖用户已有配置"
+    # monospace 一旦被 prefer, 终端/代码字体会错乱(鸿蒙是比例字体)
+    grep -A6 '<family>monospace</family>' install-harmony-sans-home.sh | grep -q prefer \
+        && bad "给 monospace 写了 prefer —— 鸿蒙是比例字体, 会让终端/代码字体错乱" \
+        || pass "monospace 未被改写(终端/代码字体不受影响)"
+    grep -q 'install-harmony-sans-home.sh' 可选组件安装.sh \
+        && pass "可选组件菜单已接入 harmony-sans" \
+        || bad "可选组件菜单未接入 install-harmony-sans-home.sh"
+else
+    bad "install-harmony-sans-home.sh 缺失"
+fi
 
 echo "════════ 3) shellcheck (可选, 未安装则跳过) ════════"
 # 找 shellcheck: 先在 PATH 里找, 再找本目录 tools/ 下的(shellcheck 或 shellcheck.exe)

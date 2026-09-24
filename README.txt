@@ -128,6 +128,12 @@ free-rootfs.sh
     ⚠️ 别用 AUR 的 wps-office / wps-office-cn —— 两者都把 2GB 重定位到
     /usr/lib/office6(rootfs), 必炸。
     装前必须完全退出 WPS; 首次会顺带补运行库(glu 等)与中文字体。
+  - 鸿蒙字体 HarmonyOS Sans: 装进 ~/.local/share/fonts(扛原子升级), 配置写进
+    ~/.config/fontconfig/conf.d/ —— 不覆盖你已有的 fonts.conf。
+    ⚠️ 华为官方 zip 直链带时间戳签名、会过期, 所以脚本没写死地址:
+       先下好 zip, 再 HARMONY_ZIP=/路径/xxx.zip bash install-harmony-sans-home.sh
+       或 HARMONY_URL='https://...zip' bash install-harmony-sans-home.sh
+    monospace(终端/代码字体)刻意不动 —— 鸿蒙是比例字体, 顶替会让等宽错乱。
   新增条目: 只需 ①install_xxx() ②注册表(MENU_ORDER/NAME/PKGS[/CHECK]) ③case 分支。
 
 ======================================================================
@@ -147,6 +153,22 @@ install-firefox-nightly-home.sh
           bash install-firefox-nightly-home.sh --remove-system  # 卸系统 firefox 回收 290M
   - 下载源: 默认优先 archive.mozilla.org(实测同一文件比官方 cdn 快一两个数量级),
     失败自动回退官方地址; 也可 FFN_MIRROR=https://你的镜像 自备。
+
+install-harmony-sans-home.sh
+  - 把鸿蒙字体(HarmonyOS Sans)装成系统字体, 装进 ~/.local/share/fonts → 扛原子升级。
+  - 为什么不用 AUR 的 ttf-harmonyos-sans: 它装到 /usr/share/fonts(rootfs) 升级必被冲,
+    且它的取源是华为 CDN 的签名链接(带时间戳+哈希)会过期。本脚本改为自备 zip/URL。
+  - 字体包的两个坑(已实测 2026.06.12 版): 目录名带空格; 16 个 ttf 里 8 个是
+    __MACOSX/._* 苹果垃圾; 且 **拉丁部分在 HarmonyOS_Sans.ttf、中文在 _SC.ttf**
+    → 只挑名字带 SC 的会把拉丁和斜体全丢掉, 所以 SC 变体 = "拉丁全家 + SC"。
+  - fontconfig 落 conf.d/10-harmony-sans.conf, 不动你的 fonts.conf;
+    只给 sans-serif/serif 写 prefer(拉丁在前、中文在后), monospace 不动。
+  - 用法: HARMONY_ZIP=/路径/HarmonyOS_Sans.zip bash install-harmony-sans-home.sh
+          bash install-harmony-sans-home.sh --check      # 只读自检
+          bash install-harmony-sans-home.sh --force      # 强制重装
+          bash install-harmony-sans-home.sh --plasma     # 连 Plasma 界面字体一起改
+          HARMONY_VARIANT=TC|ALL bash install-harmony-sans-home.sh
+  取源页: https://developer.huawei.com/consumer/cn/design/resource/
 
 install-wps-office-home.sh
   - 把 WPS Office 中文版装到 /opt + /home。

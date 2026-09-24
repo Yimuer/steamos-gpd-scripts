@@ -83,6 +83,7 @@ sudo bash steamos-setup.sh --after-upgrade
 | Firefox Nightly | 官方 `tar.xz` 解到 `/home` | 官方不发 flatpak；装 `/home` 后**自带更新器能真正自更新**，还能顺手回收系统 firefox 那 290M |
 | DeepSeek Harness 桌面版 | 官方 **AppImage** 解到 `/home` | deb 依赖 `libwebkit2gtk-4.1-0` 等一堆 SteamOS 没有的系统库 |
 | WPS Office 中文版 | 官方 **deb** → `/opt/kingsoft` | 该 deb 自己声明 `Relocations: /opt/kingsoft`；**AUR 两版都把它重定位到 `/usr/lib`，2GB 进 5G rootfs 必炸** |
+| 鸿蒙字体 HarmonyOS Sans | 官方 zip → `~/.local/share/fonts` + fontconfig 的 `conf.d/` | AUR 那套装进 `/usr/share/fonts`（rootfs，升级被冲）；官方直链带时间戳签名会过期，所以脚本不写死地址，改用 `HARMONY_ZIP` / `HARMONY_URL` |
 
 ---
 
