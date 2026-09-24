@@ -1,0 +1,8 @@
+# Managed by the steamos-nix flake (source of truth lives in /nix/store).
+# systemd-timesyncd drop-in — points time sync at low-latency domestic NTP
+# servers so atomupd's ExecStartPre NTP wait passes instantly at boot.
+# @NTP_SERVERS@ is substituted at build time from the flake option `ntpServers`
+# (default: ntp.aliyun.com ntp.tencent.com).
+[Time]
+NTP=@NTP_SERVERS@
+FallbackNTP=@NTP_SERVERS@ time.cloud.tencent.com

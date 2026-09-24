@@ -1,0 +1,6 @@
+# 本项目跑在 Linux(SteamOS) 上, 所有文本强制 LF —— 防止 Windows autocrlf
+# 把 .sh 重写成 CRLF 导致 bash 报错('\r': command not found)
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.nix text eol=lf

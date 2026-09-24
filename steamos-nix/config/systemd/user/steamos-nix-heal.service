@@ -1,0 +1,25 @@
+[Unit]
+Description=SteamOS atomic-update self-heal (nix-managed /etc re-link)
+Documentation=file://%h/.steamos-nix/README-migration.md
+# Runs as a *user* service, so the unit file itself lives under /home and
+# survives rootfs replacement. 30s after login we re-link the /etc entries a
+# big SteamOS update wiped, straight from the persistent /nix/store — no
+# downloads, no pacman, works offline.
+
+[Service]
+Type=oneshot
+# %h = the user's home (survives updates). The stable path is what the
+# sudoers.d/steamos-nix rule whitelists, so this needs no password.
+ExecStart=/usr/bin/env sudo -n %h/.steamos-nix/bin/steamos-nix-activate --state %h/.steamos-nix --quiet
+# best-effort: if the passwordless rule isn't in place yet (e.g. right after a
+# reinstall before the manual bootstrap), don't spam — retry a few times.
+Restart=on-failure
+RestartSec=20
+# 修复: 没有 limit 时, RestartSec(20s) > systemd 默认 start-limit 窗口(10s),
+# 于是变成"失败 → 每 20 秒重试一次、永不停止"(典型触发: store 被 GC 掉、
+# sudoers 还没建立)。加上 burst/interval 后失败 5 次即彻底放弃, 不再刷日志。
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+[Install]
+WantedBy=default.target

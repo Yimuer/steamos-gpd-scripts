@@ -1,0 +1,13 @@
+# ---- 缓存与临时文件 ----
+__pycache__/
+*.pyc
+*.tmp
+*.swp
+
+# ---- 会话/AI 产物(非项目代码) ----
+.workbuddy/
+todo/
+
+# ---- 系统杂项 ----
+.DS_Store
+Thumbs.db

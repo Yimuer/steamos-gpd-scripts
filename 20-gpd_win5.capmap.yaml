@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/capability_map_v1.json
+# GPD Win 5 自定义能力映射
+#
+# 基于上游 gpd4(gpd_type4.yaml) 改写, 两处区别:
+#   ① KB 键(右下角) 由 "Keyboard" 改为 "QuickAccess" → 呼出右侧边栏(QAM)
+#   ② 补注释, 标明每个 source_event 对应的物理键
+#
+# 上游原映射(供对照):
+#   KeyF14                → LeftPaddle1   (L4 背键)
+#   KeyF15                → RightPaddle1  (R4 背键)
+#   KeyF13                → QuickAccess   (模式切换键)
+#   KeyLeftMeta + KeyD    → Guide         (左下 Home 键)
+#   KeyTab                → Guide         (Home 长按)
+#   KeyLeftMeta+Ctrl+O    → Keyboard      (右下 KB 键)  ← 本文件改成 QuickAccess
+#   KeyDelete             → QuickAccess   (KB 长按)
+version: 1
+
+kind: CapabilityMap
+
+name: GPD Win 5 (custom)
+
+id: gpd_win5_custom
+
+mapping:
+  # ── 背键(由 ~/.local/opt/gpd-win5-backkeys 守护进程把 L4/R4 转成 F14/F15) ──
+  - name: L4 背键
+    source_events:
+      - keyboard: KeyF14
+    target_event:
+      gamepad:
+        button: LeftPaddle1
+  - name: R4 背键
+    source_events:
+      - keyboard: KeyF15
+    target_event:
+      gamepad:
+        button: RightPaddle1
+
+  # ── 左下 Home 键 → Steam 键 ──
+  - name: Home 键
+    source_events:
+      - keyboard: KeyLeftMeta
+      - keyboard: KeyD
+    target_event:
+      gamepad:
+        button: Guide
+  - name: Home 键(长按)
+    source_events:
+      - keyboard: KeyTab
+    target_event:
+      gamepad:
+        button: Guide
+
+  # ── 右下 KB 键 → 右侧边栏 / 游戏设置(QAM) ──
+  # 上游这里给的是 Keyboard(呼出屏幕键盘), 按需求改成了 QuickAccess。
+  - name: KB 键
+    source_events:
+      - keyboard: KeyLeftMeta
+      - keyboard: KeyLeftCtrl
+      - keyboard: KeyO
+    target_event:
+      gamepad:
+        button: QuickAccess
+  - name: KB 键(长按)
+    source_events:
+      - keyboard: KeyDelete
+    target_event:
+      gamepad:
+        button: QuickAccess
+
+  # ── 模式切换键 ──
+  - name: Mode Switch
+    source_events:
+      - keyboard: KeyF13
+    target_event:
+      gamepad:
+        button: QuickAccess
+
+filtered_events: []

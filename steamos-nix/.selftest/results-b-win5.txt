@@ -1,0 +1,118 @@
+机型: gpd-win5   预期 /etc 落点: 6
+
+── B1 模拟原子升级后: /etc 干净 → 一次激活全量重建 ──────────
+      activate: [steamos-nix-activate] sandbox (prefix=/tmp/sbx/rootfs): 1 link(s) created, live subsystems untouched. (rc=0)
+[PASS] B1 重建出 6 个落点
+[PASS] B1 其中 5 个是符号链接
+[PASS] B1 sudoers 以 0440 落盘
+[PASS] B1 sudoers 是副本而非符号链接
+[PASS] B1 模板占位符全部替换
+[PASS] B1 Win5: inputplumber 覆盖已就位
+
+── B2 重复执行(幂等) ──────────
+[PASS] B2 文件集合零变化
+[PASS] B2 文件内容零变化
+[PASS] B2 --check rc=0
+
+── B3 半损: 冲掉 ntp drop-in 与 sudoers(两种机型都有的通用落点) ──────────
+[PASS] B3 --check 探测到缺失 (rc=1)
+      缺失清单: MISSING /tmp/sbx/rootfs/etc/sudoers.d/steamos-nix MISSING /tmp/sbx/rootfs/etc/systemd/timesyncd.conf.d/ntp.conf 
+[PASS] B3 ntp 补回
+[PASS] B3 sudoers 补回
+[PASS] B3 修复后 --check rc=0
+
+── B4 store 换代 与 回滚锚点 ──────────
+[PASS] B4 换代后解析到新 generation
+[PASS] B4 换代后内容已更新
+[PASS] B4 回滚后解析回旧 generation
+[PASS] B4 回滚后 --check rc=0
+
+── B4x 链接 target 形态 ──────────
+      raw     : /tmp/sbx/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-steamos-etc/etc/systemd/timesyncd.conf.d/ntp.conf
+      resolved: /tmp/sbx/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-steamos-etc/etc/systemd/timesyncd.conf.d/ntp.conf
+[PASS] B4x 链接直指 /nix/store 真路径
+
+── B5 免密链一致性 ──────────
+[PASS] B5 sudoers 放行稳定路径
+[PASS] B5 自愈 unit 调用同一稳定路径
+[PASS] B5 sudoers 为单命令宽参数形式
+
+── B6 链接持久性 ──────────
+[PASS] B6 全部链接落点在 store 内
+
+── B7 边界: etc-current 指向的 store 被回收 ──────────
+      rc=1 输出: [steamos-nix-activate] missing /tmp/sbx/state/etc-current/etc   → store 大概率被 GC 了: 重跑 bash install.sh(联网一次)即可重建。   → 若确实没有 store: 先在 steamos-nix 目录里跑 bash install.sh。 
+[PASS] B7 悬空后激活器报错退出
+[PASS] B7 错误信息指向修复动作
+[PASS] B7 未破坏既有落点
+
+── B8 边界: 已存在但悬空的符号链接 ──────────
+[PASS] B8 --check 识别悬空链接
+[PASS] B8 apply 自动修复悬空链接
+
+── B9 边界: 目标不可写 ──────────
+      nobody 身份 rc=1
+[PASS] B9 无写权限 → 非零退出(自愈单元可识别失败)
+
+── B10 边界: 路径含空格 ──────────
+      rc=0 落点数=6
+[PASS] B10 含空格路径下正常重建
+[PASS] B10 未产生畸形路径
+
+── B11 harmonyos-sans installPhase(带空格目录 + AppleDouble 干扰) ──────────
+[PASS] B11 带空格的源目录执行成功
+[PASS] B11 恰好捞出 6 个字重
+[PASS] B11 未带入 .DS_Store / AppleDouble
+[PASS] B11 只捞 SC, 未误捞 TC 诱饵
+[PASS] B11 落盘权限 0644
+[PASS] B11 上游结构变化 → 报错退出(不静默装空包)
+
+── B12 fontconfig 渲染 ──────────
+[PASS] B12 <dir> 指向 store 真路径
+[PASS] B12 prefer 族名 = HarmonyOS Sans SC(与 ttf name 表一致)
+[PASS] B12 根标签配对且唯一
+[PASS] B12 恰好 2 组 alias(sans-serif + serif)
+[PASS] B12 未污染 monospace
+[PASS] B12 cjkFont=noto → Noto 兜底族名
+[PASS] B12 cjkFont=none → 不写 alias
+
+── B13 workbuddy 转发器(系统原生优先 / 禁用 chromium sandbox) ──────────
+[PASS] B13 有系统原生 wrapper → exec 它(不进 nix)
+[PASS] B13 系统 wrapper 可用时不启动任何 electron
+[PASS] B13 参数透传给系统 wrapper
+[PASS] B13 STEAMOS_NIX_WORKBUDDY=nix 会跳过系统 wrapper
+[PASS] B13 优先用**系统** electron(非 nix 的)
+[PASS] B13 传了 --no-sandbox --disable-setuid-sandbox
+[PASS] B13 ELECTRON_DISABLE_SANDBOX=1 已导出
+[PASS] B13 追加了系统库路径(给 native .node 用)
+[PASS] B13 IME/Wayland flags 仍在
+[PASS] B13 系统 electron 缺失 → nix electron 兜底
+[PASS] B13 兜底路径同样禁用 sandbox
+[PASS] B13 无 payload → 报错退出(rc=1)
+[PASS] B13 错误信息指向安装 WorkBuddy
+
+── B14 IBus + 小鹤双拼(setup-ibus-xiaohe.sh 端到端) ──────────
+[PASS] B14 root 直跑被拒绝(dconf/systemd --user 是用户级的)
+[PASS] B14 Rime 配置写入且小鹤双拼(double_pinyin_flypy)为默认方案
+[PASS] B14 schema_list 里还有全拼等备用方案
+[PASS] B14 已删除 default.yaml(触发重新部署)
+[PASS] B14 环境变量片段已就位
+      wayland: @im=ibus|n|n
+[PASS] B14 Wayland: 只设 XMODIFIERS, GTK/QT_IM_MODULE 未设
+      x11    : @im=ibus|ibus|ibus
+[PASS] B14 X11/XWayland: 全套 GTK/QT/XMODIFIERS
+      wayland(预设GTK): @im=ibus|n
+[PASS] B14 Wayland: 会清掉预设的 GTK_IM_MODULE(否则走 XWayland IM)
+      kwinrc : InputMethod=/usr/share/applications/org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop
+[PASS] B14 kwinrc InputMethod 指向探测到的 IBus Wayland desktop
+[PASS] B14 没有追加出重复的 [Wayland] 段
+[PASS] B14 kwinrc 其它段/键未被破坏
+[PASS] B14 ibus-daemon user unit 已写入
+[PASS] B14 unit 同时挂桌面会话与 gamescope 会话
+[PASS] B14 unit 会读 gamescope 的 DISPLAY(且缺失不报错)
+[PASS] B14 unit 有 StartLimitBurst(不无限重试)
+[PASS] B14 unit 启的是 ibus-daemon(不是 fcitx5 桥接)
+[PASS] B14 重复执行幂等(配置内容零变化)
+[PASS] B14 --check 是只读的(不写任何文件)
+
+════════ 沙盒动态(gpd-win5): 74 通过 / 0 失败 ════════

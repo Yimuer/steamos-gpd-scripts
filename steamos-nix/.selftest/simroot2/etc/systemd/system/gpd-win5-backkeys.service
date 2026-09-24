@@ -1,0 +1,26 @@
+# Managed by the steamos-nix flake — the store copy of this unit is the
+# single source of truth; steamos-nix-activate symlinks it into
+# /etc/systemd/system/gpd-win5-backkeys.service after every rootfs wipe.
+[Unit]
+Description=GPD Win 5 back buttons (L4/R4) to uinput translator
+# 切勿写 After=multi-user.target: 它与下面的 Before=inputplumber.service 以及
+# WantedBy=multi-user.target 构成 ordering cycle(multi-user.target → inputplumber
+# → backkeys → multi-user.target), systemd 会报 "Unable to break cycle" 并丢弃
+# inputplumber 的启动任务 → 游戏模式无输入管理, 手柄退回原始 Xbox 360, 背键/Home/KB 全失效。
+# After=systemd-modules-load.service 只保证 uinput 模块就绪, 处于 sysinit 阶段, 不会成环。
+After=systemd-modules-load.service
+# 守护进程在 /home 下, 必须等 /home 挂载完成(local-fs 阶段, 早于 multi-user, 不成环)
+RequiresMountsFor=/home
+Before=inputplumber.service
+
+[Service]
+Type=simple
+# /nix/store/fake-python/bin/python3//nix/store/fake-daemon/gpd-win5-backkeys.py are substituted at build time to *store* paths, so the
+# daemon no longer depends on /usr/bin/python3 surviving until activation
+# and the script itself lives content-addressed in /nix/store.
+ExecStart=/nix/store/fake-python/bin/python3 /nix/store/fake-daemon/gpd-win5-backkeys.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
