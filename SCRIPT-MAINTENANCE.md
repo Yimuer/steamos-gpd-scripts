@@ -1037,7 +1037,7 @@ findmnt -no SOURCE --target /usr/local
   ```bash
   tar -czf steamos-reinstall-backup-$(date +%Y%m%d-%H%M%S).tar.gz \
     --exclude='*.bak.*' --exclude='steamos-setup.sh.txt' --exclude='.workbuddy' \
-    README.txt SCRIPT-MAINTENANCE.md steamos-setup.sh *.yaml *.sh *.py
+    使用说明.txt SCRIPT-MAINTENANCE.md steamos-setup.sh *.yaml *.sh *.py
   ```
 - 打包后**解压复验**：语法再过一遍 + 确认 capmap.yaml 在包内。
 
@@ -1231,7 +1231,7 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
 | 1b | 保留现状 + 写清它的定位与"别去重" | 零风险；读者知道它是什么 | 仓库体积不变 | **已做**（`steamos-nix/README.md` + 主 README §八 + 本文件 §10.3b） |
 | 2 | **4 个 `install-*-home.sh` 合并为「单引擎 + 每应用一份 profile」**：`install-app-home.sh <app>`，profile 里写「下载 URL 形态 / 解包方式 / 落点是 /home 还是 /opt / 入口与图标发现规则 / 系统依赖 / check 判据」 | 消除约 480 行重复；**仍然只有一个文件，自包含性不丢**；新增同类应用变成"加一段 profile" | 4 个已验证脚本要重构成 1 个，并**全部重测**（Firefox tar.xz / dsh AppImage / WPS deb / LocalSend） | 收益最大，但需专门一轮回归 |
 | 3 | **步骤表驱动**：一张 `STEPS` 表定义「函数名 / 编号 / 关键词 / 标题 / 落地判据」，让 `step_label`、`map_step`、`FUNCS`、help 全部由表派生 | 加一个步骤从**改 9 处**变成**改 1~2 处**，不会再漏接注册点（历史上 README 步骤列表、本节的步骤表都曾漏更新） | 动主脚本的核心分发逻辑；`verify_step` 是函数式判据，可能只能半自动化 | 收益高，风险中等 |
-| 4 | **两份 README 归一**：`README.txt`（313 行详细用法）改名 `使用说明.txt`，只留 `README.md` 作为唯一入口 | 消除"两份说明书"的漂移风险（GitHub 只渲染 `.md`） | 需更新交叉引用 | 小改动，可做 |
+| 4 | ~~两份 README 归一~~ **已完成（2026-09-25）**：`README.txt` → `使用说明.txt`，顶部加一句"详细版用法，概览看 README.md"；README.md / 本文件 / 重装流程.md 的指向同步更新 | 消除"两份说明书"的漂移 | — | **结案** |
 | 5 | 自愈清单 `CHECKS` 与步骤落地物是**两处重复的知识**（已有 `check.sh` 断言兜底） | 理论可派生 | 抽象成本大于收益 | **建议不做**，保持断言 |
 
 ### 10.3 已决定不做（记录理由，免得反复讨论）

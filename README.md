@@ -121,7 +121,7 @@ install-*-home.sh        各应用的"装进 /home 或 /opt"独立脚本(单文�
 self-heal-after-upgrade.sh  开机自愈钩子(由步骤 12 部署在 /home)
 check.sh / verify-upstreams.sh   自检 / 上游体检
 steamos-nix/             探路分支(已冻结, 主线不依赖; 详见下节)
-README.txt               详细说明(本文件是它的精简版)
+使用说明.txt             详细用法(完整版; 本文件是它的精简版)
 SCRIPT-MAINTENANCE.md    维护手册: 每个坑的来龙去脉、改脚本前必读
 CHANGELOG.md             版本记录
 ```
