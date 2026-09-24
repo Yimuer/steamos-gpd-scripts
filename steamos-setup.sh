@@ -216,7 +216,9 @@ detect_hw() {
 DEVICE_PROFILE=""; DEVICE_PROFILE_DESC=""; PROFILE_SUPPORT=""; PROFILE_HINT=""
 
 device_profile() {
-    # 掌机证据链: 电池(便携设备必有) / 已知掌机品牌(DMI) / Win5 专属背键 HID
+    # 掌机证据链(按可靠度排序): ①Win5 专属背键 HID ②已知掌机品牌(DMI) ③电池存在
+    # ⚠️ 电池只是辅助信号, 不能当硬证据 —— 部分掌机电池可拆卸(如 GPD Win5),
+    #    拔电池运行时 HAS_BAT=0, 此时必须靠 ①② 判定; ③仅兜底未知品牌的便携设备
     local HAS_BAT=0 _ps
     for _ps in /sys/class/power_supply/*; do
         [ -e "$_ps" ] || continue
