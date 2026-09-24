@@ -89,7 +89,10 @@ free-rootfs.sh
           sudo bash free-rootfs.sh --apply --with-firefox --with-opencv --compress
   - 前置: 需 steamos-readonly disable(脚本自动处理)。
 
-【多机型兼容】(2026-09-08 起自动检测)
+【多机型兼容】(v1.3.0 起统一为设备画像层, --device 免root快查)
+  - 画像: amd-handheld-gpdwin5(主目标) / amd-handheld / amd-desktop /
+          intel-handheld(引导Bazzite) / intel-nvidia-desktop(引导Bazzite) / unknown
+  - 不支持机型在安装前弹确认门禁; 未来机型适配统一加在 profile_extra()
   - 自动识别: GPD Win5 / AMD 台式独显 / N 卡机器 / Intel 核显(含 Panther Lake)。
   - 背键[4]只在 Win5 上执行; TDP[9]只在 APU/核显上执行(台式独显自动跳过)。
   - N 卡 / Panther Lake 核显机器装不了官方 SteamOS, 脚本会引导走 Bazzite。

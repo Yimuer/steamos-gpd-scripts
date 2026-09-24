@@ -29,6 +29,7 @@
 #  用法:
 #    bash steamos-setup.sh            全量(0→9); 已成功的步骤会自动跳过
 #    bash steamos-setup.sh --status   查看状态(含各步完成情况)
+#    bash steamos-setup.sh --device   只检测本机设备画像(免root, 不装任何东西)
 #    bash steamos-setup.sh 1 2 4      只装某几步
 #    bash steamos-setup.sh clean      只做 rootfs 瘦身(清 locale/man/doc/缓存)
 #    bash steamos-setup.sh --reset    清除进度记录(下次全量重跑)
@@ -196,14 +197,106 @@ detect_hw() {
     fi
 }
 
+# ===========================================================================
+#  设备画像(统一机型分类) —— 本项目主目标: AMD核显掌机(GPD Win5)
+# ---------------------------------------------------------------------------
+#  画像取值(DEVICE_PROFILE):
+#    amd-handheld-gpdwin5   AMD核显掌机·GPD Win5  —— 主目标, 全功能(含背键)
+#    amd-handheld           AMD核显掌机(其它品牌) —— 全功能, 机型专属件自动跳过
+#    amd-desktop            AMD 台式主机(独显或APU/迷你主机) —— 掌机件自动跳过
+#    intel-handheld         Intel核显掌机(如 MSI Claw) —— 官方 SteamOS 不支持 → 引导 Bazzite
+#    intel-nvidia-desktop   Intel+NVIDIA 台式主机 —— 官方 SteamOS 不支持 → 引导 Bazzite
+#    unknown                其它组合 —— 各步骤按自身判据取舍, 欢迎扩充 profile_extra
+#  支持度(PROFILE_SUPPORT): full=全功能 / partial=部分 / bazzite=装不了官方 SteamOS
+#
+#  【未来维护入口】给新机型做适配: 只在 profile_extra() 的 case 里加分支,
+#  写该机型专属的修补/参数; 各步骤保持只认 IS_WIN5 / GPU_IS_APU 等底层判据,
+#  不散落机型 if —— 避免逻辑碎片化。
+# ===========================================================================
+DEVICE_PROFILE=""; DEVICE_PROFILE_DESC=""; PROFILE_SUPPORT=""; PROFILE_HINT=""
+
+device_profile() {
+    # 掌机证据链: 电池(便携设备必有) / 已知掌机品牌(DMI) / Win5 专属背键 HID
+    local HAS_BAT=0 _ps
+    for _ps in /sys/class/power_supply/*; do
+        [ -e "$_ps" ] || continue
+        case "$(basename "$_ps")" in BAT*|bat*) HAS_BAT=1; break ;; esac
+    done
+    local DMI_VENDOR DMI_PRODUCT KNOWN_HANDHELD=0
+    DMI_VENDOR="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)"
+    DMI_PRODUCT="$(cat /sys/class/dmi/id/product_name 2>/dev/null)"
+    echo "$DMI_VENDOR $DMI_PRODUCT" | grep -qiE \
+        "GPD|AYANEO|ONE-NETBOOK|OneXPlayer|ANBERNIC|VALVE|Steam Deck|ROG Ally|LEGION Go|Claw" \
+        && KNOWN_HANDHELD=1
+    [ "$IS_WIN5" -eq 1 ] && KNOWN_HANDHELD=1
+
+    if [ "$GPU_VENDOR" = "amd" ]; then
+        if [ "$GPU_IS_APU" -eq 1 ] && { [ "$IS_WIN5" -eq 1 ] || [ "$KNOWN_HANDHELD" -eq 1 ] || [ "$HAS_BAT" -eq 1 ]; }; then
+            if [ "$IS_WIN5" -eq 1 ]; then
+                DEVICE_PROFILE="amd-handheld-gpdwin5"
+                DEVICE_PROFILE_DESC="AMD核显掌机·GPD Win5(本项目主目标, 全功能)"
+                PROFILE_SUPPORT="full"; PROFILE_HINT=""
+            else
+                DEVICE_PROFILE="amd-handheld"
+                DEVICE_PROFILE_DESC="AMD核显掌机(${DMI_VENDOR:-未知} ${DMI_PRODUCT:-}; 背键等机型专属件自动跳过)"
+                PROFILE_SUPPORT="full"; PROFILE_HINT=""
+            fi
+        else
+            DEVICE_PROFILE="amd-desktop"
+            DEVICE_PROFILE_DESC="AMD 台式主机(${GPU_MODEL:-AMD平台}; 掌机专属件自动跳过, TDP 按独显判据处理)"
+            PROFILE_SUPPORT="full"; PROFILE_HINT=""
+        fi
+    elif [ "$GPU_VENDOR" = "intel" ] && [ "$GPU_IS_APU" -eq 1 ]; then
+        DEVICE_PROFILE="intel-handheld"
+        DEVICE_PROFILE_DESC="Intel核显掌机/便携(${DMI_VENDOR:-未知} ${DMI_PRODUCT:-} ${GPU_MODEL:-})"
+        PROFILE_SUPPORT="bazzite"
+        PROFILE_HINT="官方 SteamOS 仅支持 AMD GPU。建议改用 Bazzite(对 Intel 核显友好); 本脚本仅 --status/参考价值"
+    elif [ "$GPU_VENDOR" = "nvidia" ] && [ "$CPU_VENDOR" = "GenuineIntel" ]; then
+        DEVICE_PROFILE="intel-nvidia-desktop"
+        DEVICE_PROFILE_DESC="Intel+NVIDIA 台式主机(${GPU_MODEL:-N卡})"
+        PROFILE_SUPPORT="bazzite"
+        PROFILE_HINT="官方 SteamOS 不支持 NVIDIA。建议改用 Bazzite(支持 N 卡 + DLSS); 本脚本仅 --status/参考价值"
+    else
+        DEVICE_PROFILE="unknown"
+        DEVICE_PROFILE_DESC="未归类组合(CPU:${CPU_VENDOR:-?} / GPU:${GPU_MODEL:-?})"
+        PROFILE_SUPPORT="partial"
+        PROFILE_HINT="组合较罕见: 各步骤会按自身判据自动取舍; 新机型适配请在 profile_extra() 加分支"
+    fi
+}
+
+# ── 各机型适配挂载点(未来维护入口, 保持为空壳) ──
+profile_extra() {
+    case "$DEVICE_PROFILE" in
+        # amd-handheld-gpdwin5) : Win5 专属微调(已由步骤[4]覆盖, 此处留空示范) ;;
+        # amd-desktop)          : 例: 桌面独显专属的 extra ;;
+        # intel-handheld)       : 例: Intel 显卡环境变量/固件补丁 ;;
+        *) : ;;
+    esac
+}
+
+show_device() {
+    detect_hw; device_profile
+    echo "════════ 设备画像 (bash steamos-setup.sh --device 可随时复查) ════════"
+    printf "  画像   : %s\n" "$DEVICE_PROFILE"
+    printf "  说明   : %s\n" "$DEVICE_PROFILE_DESC"
+    printf "  CPU    : %s\n" "${CPU_VENDOR:-未知}"
+    printf "  GPU    : %s (%s)\n" "${GPU_MODEL:-未知}" "$([ "$GPU_IS_APU" -eq 1 ] && echo 核显/APU || echo 独立显卡)"
+    printf "  支持度 : %s\n" "$PROFILE_SUPPORT"
+    [ -n "$PROFILE_HINT" ] && printf "  提示   : %s\n" "$PROFILE_HINT"
+    printf "  细节   : Win5=%s PantherLake=%s 电池=%s\n" "$IS_WIN5" "$IS_PANTHER" "$([ -n "$(ls /sys/class/power_supply/BAT* 2>/dev/null)" ] && echo 有 || echo 无)"
+    exit 0
+}
+
 # 首次执行一次检测(供 --status / 各步骤使用)
 detect_hw
+device_profile
 
 # ---------- 帮助 ----------
 show_help() {
     awk 'NR==1 {next} { if ($0 !~ /^#/) exit; sub(/^#+ ?/, ""); print }' "$0"
     echo
     echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务"
+    echo "设备画像: --device 只检测本机机型(免root): AMD掌机/AMD台式/Intel掌机/Intel+N卡台式"
     echo "断点续传: 直接重跑即可(已完好的步骤自动跳过, 被系统升级冲掉的会自动重建)"
     echo "         --reset 清进度; FORCE=1 或 --force 强制重跑"
     echo "         --after-upgrade (等价 restore): 升级后一键恢复, 自动检测版本变化并重建被覆盖的配置"
@@ -350,6 +443,26 @@ prepare() {
     fi
     printf "  用户: %s (%s)\n  系统: %s\n" "$REAL_USER" "$REAL_HOME" \
         "$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2-)"
+
+    # ── 设备画像与机型门禁(装前检测) ──
+    detect_hw; device_profile
+    echo "  设备画像: $DEVICE_PROFILE — $DEVICE_PROFILE_DESC"
+    profile_extra    # 机型专属适配挂载点(当前为空, 未来维护入口)
+    if [ "$PROFILE_SUPPORT" = "bazzite" ] && [ "${SKIP_DEVICE_GATE:-0}" -ne 1 ]; then
+        echo
+        warn "本机型装不了官方 SteamOS: $PROFILE_HINT"
+        if [ -t 0 ]; then
+            printf "  仍要继续吗? [y/N] "
+            local _ans
+            read -r _ans
+            case "$_ans" in
+                y|Y|yes|YES) info "已确认继续(不支持项会自动跳过)" ;;
+                *) err "已取消。改用 Bazzite 或加 SKIP_DEVICE_GATE=1 跳过本门禁"; exit 1 ;;
+            esac
+        else
+            warn "非交互环境, 跳过确认(各步骤将按判据自动取舍)"
+        fi
+    fi
     [ "$IS_STEAMOS" -eq 1 ] && echo "  类型: Valve SteamOS(holo)  → 将解除只读根" || echo "  类型: Arch 系"
 
     # 1) SteamOS 只读解除
@@ -2063,6 +2176,7 @@ setup_gpu() {
     printf "  GPU: %s (%s)\n" "${GPU_MODEL:-未知}" "${GPU_VENDOR:-未知}"
     printf "  类型: %s\n" "$([ "$GPU_IS_APU" -eq 1 ] && echo 'APU/核显' || echo '独立显卡')"
     if [ "$IS_WIN5" -eq 1 ]; then printf "  机型: GPD Win5 (背键已支持)\n"; fi
+    printf "  画像: %s — %s [支持度: %s]\n" "$DEVICE_PROFILE" "$DEVICE_PROFILE_DESC" "$PROFILE_SUPPORT"
 
     echo
     case "$GPU_VENDOR" in
@@ -2474,6 +2588,7 @@ ARGC=$#
 for arg in "$@"; do
     case "$arg" in
         --status) show_status; exit 0 ;;
+        --device) show_device; exit 0 ;;
         --adopt) state_init; adopt_state ;;
         --reset) DO_RESET=1 ;;
         --force|-f) FORCE=1 ;;

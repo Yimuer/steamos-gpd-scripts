@@ -6,6 +6,22 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [1.3.0] - 2026-09-24
+
+### 新增: 设备画像层(装前检测 + 多机型适配空间)
+- 主脚本启动/prepare 时自动归类设备画像(`--device` 可免root单独复查):
+  - `amd-handheld-gpdwin5`  AMD核显掌机·GPD Win5(主目标, 全功能)
+  - `amd-handheld`          其它AMD核显掌机(电池/掌机品牌判据)
+  - `amd-desktop`           AMD 台式主机(独显或APU/迷你主机)
+  - `intel-handheld`        Intel核显掌机(如 MSI Claw) → 引导 Bazzite
+  - `intel-nvidia-desktop`  Intel+NVIDIA 台式主机 → 引导 Bazzite
+  - `unknown`               其它组合 → 各步骤按判据自动取舍
+- 不支持机型(支持度=bazzite)在 prepare 阶段弹确认门禁(交互确认/非交互跳过,
+  `SKIP_DEVICE_GATE=1` 可关闭)
+- 新增 `profile_extra()` 机型适配挂载点: 未来给新机型做适配只加 case 分支,
+  不污染各步骤逻辑(步骤只认 IS_WIN5/GPU_IS_APU 等底层判据)
+- `--status` 与 prepare 横幅均显示画像与支持度
+
 ## [1.2.1] - 2026-09-24
 
 ### 新增
