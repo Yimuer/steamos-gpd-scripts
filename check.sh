@@ -49,7 +49,7 @@ grep -q 'install_decky_plugin()' "$S" \
     && pass "install_decky_plugin 助手存在" \
     || bad  "install_decky_plugin 缺失"
 # 2.4 断点续传状态机关键节点
-for fn in setup_cn setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal; do
+for fn in setup_cn setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili; do
     grep -q "^$fn() {" "$S" || { bad "步骤函数缺失: $fn"; }
 done
 grep -q 'state_done\|state_mark\|verify_step' "$S" && pass "断点续传状态机完整" || bad "状态机关键函数缺失"

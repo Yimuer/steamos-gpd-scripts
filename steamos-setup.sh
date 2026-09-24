@@ -25,6 +25,9 @@
 #   [10] 换境内 NTP(可选, 加速开机): SteamOS 默认用 arch.pool.ntp.org, 境内延迟高(实测
 #        400ms+), 开机时 atomupd 要等 NTP 校时最多 20 秒才放行 → 开机慢。换成
 #        阿里/腾讯 NTP(drop-in, 系统更新不覆盖), 开机同步秒过, atomupd 不再白等。
+#   [11] GPU 加速建议(纯提示): 按显卡给出 DLSS/FSR/XeSS 建议
+#   [12] 升级后自愈服务: 开机版本钩子, 自动检测并重建被原子更新冲掉的配置
+#   [13] wiliwili: B站第三方客户端(flatpak 用户级安装, 原子升级不冲)
 #
 #  用法:
 #    bash steamos-setup.sh            全量(0→9); 已成功的步骤会自动跳过
@@ -297,7 +300,7 @@ device_profile
 show_help() {
     awk 'NR==1 {next} { if ($0 !~ /^#/) exit; sub(/^#+ ?/, ""); print }' "$0"
     echo
-    echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务"
+    echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端"
     echo "设备画像: --device 只检测本机机型(免root): AMD掌机/AMD台式/Intel掌机/Intel+N卡台式"
     echo "断点续传: 直接重跑即可(已完好的步骤自动跳过, 被系统升级冲掉的会自动重建)"
     echo "         --reset 清进度; FORCE=1 或 --force 强制重跑"
@@ -310,6 +313,7 @@ show_help() {
     echo "第[12]步 selfheal: 部署系统升级后自愈服务(SteamOS 大版本升级会冲掉 /etc 下的系统级修改,"
     echo "         本步放一个 user 服务在 /home, 开机自动重建被冲掉的背键/inputplumber/NTP/IME)"
     echo "         (非 systemd / /etc 只读的环境会被拦下, 确认环境无误可 SKIP_ENV_CHECK=1)"
+    echo "第[13]步 wiliwili: B站第三方客户端(flatpak 用户级; 运行时走 flathub, 首次较久)"
     echo "输入法: [2]步已于2026-09-24禁用(不动系统输入法); WorkBuddy 自身的 IME 适配见下"
     echo "WorkBuddy 输入法适配: WB_IME=wayland(默认,text-input-v1) | wayland3 | x11(退到XWayland,最稳)"
     echo "  若 WorkBuddy 不能输入: 依次试 WB_IME=wayland3 / WB_IME=x11 重跑第[3]步"
@@ -359,6 +363,7 @@ step_label() {
         setup_ntp)      echo "10 换境内 NTP(加速开机)" ;;
         setup_gpu)      echo "11 GPU 加速建议(DLSS/FSR)" ;;
         setup_selfheal) echo "12 升级后自愈服务" ;;
+        setup_wiliwili) echo "13 wiliwili(B站客户端)" ;;
         *)              echo "$1" ;;
     esac
 }
@@ -397,6 +402,8 @@ verify_step() {
         setup_selfheal) [ -f "$REAL_HOME/.config/systemd/user/steamos-self-heal.service" ] && \
                         [ -f "$REAL_HOME/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh" ] && \
                         [ -f /etc/sudoers.d/steamos-self-heal ] ;;
+        # flatpak --user 的应用目录在 /home, 原子升级幸存; 名字含 wiliwili 即算达标
+        setup_wiliwili) compgen -G "$REAL_HOME/.local/share/flatpak/app/*wiliwili*" >/dev/null ;;
         clean_rootfs)  return 0 ;;
         *)             return 0 ;;
     esac
@@ -2374,6 +2381,66 @@ EOF
 EOF
 }
 
+# ===========================================================================
+#  [13] wiliwili —— B站第三方客户端(必装)
+# ---------------------------------------------------------------------------
+#  x86_64 Linux 官方只发 flatpak 单文件包(无 AppImage/deb) → flatpak --user:
+#    - 用户级安装落在 /home(p8), 原子升级不冲掉
+#    - bundle 不含运行时 → 首次安装需 flathub 远端补 org.freedesktop.Platform
+#      (境内连 flathub 可能较慢, 属一次性成本)
+#  下载走 gh 镜像优先(与 Decky 同套路)。
+# ===========================================================================
+setup_wiliwili() {
+    step "[13/13] wiliwili (B站客户端)"
+    prepare "$@"
+
+    # flatpak 本体(SteamOS 自带; 其它 Arch 需补装)
+    pacman -Qq flatpak >/dev/null 2>&1 || {
+        sub "安装 flatpak..."
+        pacman -S --noconfirm --needed flatpak 2>&1 | tail -2 \
+            || { err "flatpak 安装失败"; return 1; }
+    }
+    # flathub 用户远端(bundle 的运行时依赖从这里补; 以真实用户身份操作)
+    if ! sudo -u "$REAL_USER" flatpak remotes --user 2>/dev/null | grep -q flathub; then
+        sub "添加 flathub 用户远端..."
+        sudo -u "$REAL_USER" flatpak remote-add --user --if-not-exists \
+            flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>&1 | tail -1
+    fi
+
+    sub "查询最新版本..."
+    local TAG
+    TAG="$(curl -sL --connect-timeout 8 --max-time 25 \
+        "https://api.github.com/repos/xfangfang/wiliwili/releases/latest" 2>/dev/null \
+        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    [ -n "$TAG" ] || TAG="v1.6.0"    # API 不通时的已知兜底版本
+    info "目标版本: $TAG"
+
+    local DLURL="https://github.com/xfangfang/wiliwili/releases/download/$TAG/wiliwili-Linux-x86_64.flatpak"
+    local TMP="$REAL_HOME/.cache/wiliwili.download.flatpak"
+    mkdir -p "$REAL_HOME/.cache" 2>/dev/null
+    local ok=0 u
+    for prefix in "https://ghfast.top/" "https://gh-proxy.com/" "https://ghproxy.net/" ""; do
+        u="${prefix}${DLURL}"
+        sub "尝试: $u"
+        url_reachable "$u" || { sub "  探活失败, 换源"; continue; }
+        if curl -fL --connect-timeout 10 --max-time 600 "$u" -o "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
+            ok=1; info "  已下载 $(du -h "$TMP" 2>/dev/null | cut -f1)"; break
+        fi
+        sub "  下载失败, 换源"
+    done
+    [ "$ok" -eq 1 ] || { rm -f "$TMP"; err "全部源下载失败: $DLURL"; return 1; }
+
+    sub "安装 flatpak 包(用户级; 运行时缺失会从 flathub 补, 首次可能较久)..."
+    # root 环境下 flatpak --user 会落到 root 的家, 必须以真实用户身份执行
+    if ! sudo -u "$REAL_USER" flatpak install --user -y "$TMP" 2>&1 | tail -3; then
+        rm -f "$TMP"; err "flatpak 安装失败(运行时下载失败? 检查 flathub 连通性)"; return 1
+    fi
+    rm -f "$TMP"
+    chown -R "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.local/share/flatpak" 2>/dev/null || true
+    info "已安装 wiliwili(flatpak 用户级)。桌面应用列表搜 wiliwili;"
+    echo "  游戏模式如需入口: Steam → 添加非Steam游戏 → 浏览 flatpak 应用"
+}
+
 
 # ===========================================================================
 #  --status
@@ -2551,6 +2618,7 @@ map_step() {
         10|ntp|ntpcn|time|timesync) echo setup_ntp ;;
         11|gpu|dlss|fsr|upscale|显卡) echo setup_gpu ;;
         12|selfheal|heal|自愈) echo setup_selfheal ;;
+        13|wiliwili|bili|bilibili) echo setup_wiliwili ;;
         *) echo "" ;;
     esac
 }
@@ -2564,7 +2632,7 @@ adopt_state() {
     echo "  判据: 各步骤的落地复核(文件/包/systemd unit 是否真实存在)"
     echo
     local fn adopted=0 pending=0
-    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal; do
+    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili; do
         if verify_step "$fn"; then
             state_mark "$fn"
             info "[认领] $(step_label "$fn") —— 已达标"
@@ -2609,7 +2677,7 @@ done
 #      多跑几个"其实没坏"的步骤只是多几次判空, 代价远小于漏恢复一项;
 #   ③ 以后新增步骤(如 [13])自动纳入恢复范围, 不用记得回来补两处。
 # AFTER_UPGRADE 只用于: 版本变化提示 + rootfs 空间预检。
-[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal)
+[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili)
 
 if [ "$DO_RESET" -eq 1 ]; then
     state_reset
