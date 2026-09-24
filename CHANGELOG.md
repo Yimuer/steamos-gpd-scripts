@@ -6,6 +6,17 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [1.4.0] - 2026-09-24
+
+### 新增: 必装/可选分离 —— 可选组件安装器
+- 新增 `可选组件安装.sh`: 必装主线(steamos-setup.sh 十二步)之外的增强项菜单,
+  首个条目: 微信(官方原生版沙盒封装 wechat-universal-bwrap, 自动补中文字体
+  noto-fonts-cjk; 包名逐个探测以适配 archlinuxcn 上游变化)
+- 两个启动器(重装后先运行我 .desktop/备用.sh)在必装跑完后询问
+  "是否安装可选组件(微信等)?", 确认后拉起可选安装器
+- 扩展点: 新增可选项只需 ①install_xxx() ②注册表(MENU_ORDER/NAME/PKGS)
+  ③case 分支, 三处各一行, 与 profile_extra 同哲学
+
 ## [1.3.1] - 2026-09-24
 
 ### 修正(健壮性)
