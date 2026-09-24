@@ -2,6 +2,8 @@
 
 > **更适合中国宝宝和各路 win 掌机的 steamos 出路**
 
+**仓库地址**：https://github.com/Yimuer/steamos-gpd-scripts
+
 把「SteamOS / Win 掌机重装系统后，要从零配一遍」这件事，变成**跑几条命令**。
 
 本项目在 **GPD Win5（Ryzen AI Max+ 395 / Radeon 8060S）** 上逐环实测，
@@ -35,7 +37,9 @@ SteamOS 大版本升级会整块替换 rootfs。踩过之后才知道，被冲�
 ## 二、快速开始
 
 ```bash
-# 在解压目录里打开终端：
+git clone https://github.com/Yimuer/steamos-gpd-scripts.git
+cd steamos-gpd-scripts
+
 bash steamos-setup.sh --status      # 先看本机状态
 bash steamos-setup.sh 3             # 分步安装(便于定位错误)
 bash steamos-setup.sh               # 或一次全量
