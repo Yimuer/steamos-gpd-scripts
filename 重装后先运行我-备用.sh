@@ -10,5 +10,12 @@ cd "$(dirname "$0")" || exit 1
 bash ./steamos-setup.sh
 rc=$?
 echo
-echo "──── 结束：退出码 $rc （按回车关闭）────"
+printf "是否安装可选组件(微信等)? [y/N] "
+read -r opt
+opt2="跳过"
+case "$opt" in
+    y|Y|yes|YES) bash ./可选组件安装.sh; opt2="退出码 $?" ;;
+esac
+echo
+echo "──── 结束：必装退出码 $rc / 可选:$opt2 （按回车关闭）────"
 read -r
