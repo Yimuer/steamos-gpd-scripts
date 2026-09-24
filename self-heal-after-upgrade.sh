@@ -8,7 +8,9 @@
 #    1) 版本变更检测: 对比 /etc/os-release 的 VERSION_ID 与上次记录
 #       (记录存 /home, 能扛原子更新)。版本变化 = 经历了一次 A/B 原子更新,
 #       rootfs 被整块替换。
-#    2) 落地物清点: 逐项检查本项目写入 /etc 的系统级修改是否幸存,
+#    2) 落地物清点: 逐项检查本项目写入 /etc 的系统级修改是否幸存
+#       (背键 unit/udev、inputplumber、NTP drop-in、WorkBuddy wrapper、
+#        LocalSend 的 firewalld 放行 53317),
 #       生成"被冲掉清单" → 报告落盘 + 桌面通知。
 #    3) 自动恢复: sudoers 幸存时直接跑主脚本 --after-upgrade
 #       (主脚本落地复核: 完好的自动跳过, 只补被冲掉的, 含 pacman 包);
@@ -59,6 +61,9 @@ declare -a CHECKS=(
     "Decky Loader 系统单元|/etc/systemd/system/plugin_loader.service|file|5"
     "境内 NTP|/etc/systemd/timesyncd.conf.d/ntp.conf|file|10"
     "WorkBuddy Wayland IME|/usr/bin/workbuddy|ime|3"
+    # fwport 的 path 字段是 firewalld 配置**目录**(不是文件): 区域文件名不一定叫
+    # public.xml, 故用 grep -r 递归找; 端口号写在下面的分支里。
+    "LocalSend 防火墙(53317)|/etc/firewalld|fwport|14"
 )
 MISSING=(); NEED_REPAIR=()
 for entry in "${CHECKS[@]}"; do
@@ -67,6 +72,13 @@ for entry in "${CHECKS[@]}"; do
     case "$how" in
         file) [ -e "$path" ] || missing=1 ;;
         ime)  { [ -f "$path" ] && grep -q -- "--enable-wayland-ime" "$path" 2>/dev/null; } || missing=1 ;;
+        fwport)
+            # 放行规则在 /etc(原子升级必被冲) → 丢了就重跑步骤[14]补回。
+            # 没装 firewalld 的机器不算缺失, 否则每次开机都白报一次。
+            if command -v firewall-cmd >/dev/null 2>&1; then
+                grep -rqs '53317' "$path" 2>/dev/null || missing=1
+            fi
+            ;;
     esac
     if [ "$missing" -eq 1 ]; then
         MISSING+=("$desc → $path")
