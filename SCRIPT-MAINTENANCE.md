@@ -45,6 +45,9 @@
 | `9`/`tdp` | `setup_tdp()` | TDP 控制（SimpleDeckyTDP，插电/离电分档） |
 | `10`/`ntp` | `setup_ntp()` | 换境内 NTP（加速开机，见第 2.7 节） |
 | `11`/`gpu` | `setup_gpu()` | **GPU 加速建议**（DLSS/FSR，纯提示无落地，见第 3.1 节） |
+| `12`/`selfheal` | `setup_selfheal()` | 升级后自愈服务（user 服务在 /home + sudoers 在 /etc） |
+| `13`/`wiliwili` | `setup_wiliwili()` | B站客户端（flatpak `--user`，落 /home） |
+| `14`/`localsend` | `setup_localsend()` | **LocalSend 局域网传文件**（官方 AppImage 解到 /home + 放行防火墙 53317） |
 
 辅助函数：`url_reachable()`（下载探活）、`homedir()`、`state_*`（断点续传）、
 `verify_step()`（落地复核）、`step_label()`、`map_step()`（参数→函数）、`show_status()`、
@@ -62,6 +65,7 @@
 | `diag-gpd-inputs.sh` / `diag-ip.sh` | 输入链路诊断 | |
 | `install-decky-loader.sh` / `install-ge-proton.sh` | 单独装 Decky / GE-Proton | |
 | `fix-workbuddy-wayland-ime.sh` / `upgrade-workbuddy-aur.sh` | WorkBuddy 输入法修复 / 升级 | |
+| `install-workbuddy-home.sh` | **WorkBuddy 迁入 /home（原生无沙箱 + 扛原子升级）** | `--check` 只读自检 / `--sandbox-off` 关命令沙箱；步骤[3]尾部自动调用 |
 | `setup-fcitx5-flypy.sh` / `setup-steam-game-mode-ime.sh` | fcitx5 旧方案（已弃用，保留备选） | |
 | `set-steam-launchoptions.py` | 写 Steam 启动选项（自动探测 userid） | 主脚本第 6 步会生成更完善的 `steam-launch-games.py` |
 | `reset-endfield-sdk.sh` | **终末地黑屏的主修复手段**（清 SDK 本地状态），见 [6h] | 带健康检测 / `--dry-run` / `--force`，改名备份不删除 |
@@ -69,6 +73,30 @@
 | `install-dwproton.sh` | 装 DW-Proton —— **后备，本机不需要**（见 [6h]） | 默认 10.0-26；已修好续传 bug |
 | `fix-endfield-qt.sh` | 补终末地 Qt WebEngine 运行时资源（见 [6d]） | 幂等，支持 `--dry-run` |
 | `switch-compat-tool.py` | 切换 Steam 兼容层（须先彻底退出 Steam） | 支持 `--dry-run`；已修 `pgrep -f steam` 误判 |
+| `可选组件安装.sh` | 必装主线之外的增强项菜单（带 ✓ 状态） | 扩展点见 1.3；非 pacman 项用 `MENU_CHECK` |
+| `install-firefox-nightly-home.sh` | **Firefox Nightly 装进 `/home`（无沙箱 + 扛原子升级）** | `--check` / `--lang` / `--force` / `--remove-system` |
+| `install-dsh-desktop-home.sh` | **DeepSeek Harness 桌面版装进 `/home`** | 取 AppImage 不取 deb（理由见 3.10）；`--check` / `--version` / `--force` |
+| `install-wps-office-home.sh` | **WPS Office 装到 `/opt` + `/home`** | 取官方 deb（`Relocations: /opt/kingsoft`）；禁用 AUR 的 `/usr/lib/office6` 布局 |
+| `verify-upstreams.sh` | **上游依赖体检（只读联网）** | 发布前/重装前跑；区分下载路径与 API 路径；见 §9.1 |
+| `tools/shellcheck(.exe)` | 可选：放这就能让 `check.sh` 第 3 节生效 | 当前全脚本 warning = 0，别退回 |
+
+### 1.3 可选组件安装器：新增一个可选项怎么做
+
+`可选组件安装.sh` 是 menu-driven 的独立脚本（`sudo -E` 自提权，**不属** 14 步主线）。
+新增条目**只改三处**，不要散落逻辑：
+
+1. 写 `install_xxx()` —— 逻辑重的话就 call 独立脚本（如 `install_firefox_nightly`
+   薄封装 `install-firefox-nightly-home.sh`），保持"一处实现"。
+2. 注册表各加一行：`MENU_ORDER` / `MENU_NAME` / `MENU_PKGS`。
+3. 菜单 `case` 分支加一行。
+
+- **非 pacman 装的项**（如 firefox-nightly 是解包官方便携包到 `/home`）：
+  `pkg_installed`（`pacman -Qq`）永远返回假 → 菜单的 ✓ 标记永远不亮。
+  这类项额外在 **`MENU_CHECK`** 注册一个判据函数名，菜单会优先用它。
+- 脚本以 root 跑，要摸用户目录的判据必须用文件顶部解析出的 `$REAL_HOME`
+  （`SUDO_USER` → `getent passwd`），**不要写死 `/home/deck`**。
+- 教训：写判据函数时别引用未定义变量（`set -u` 下会静默变空字符串 →
+  `[ -x "/.local/..." ]` 恒假，菜单状态就永远不对）。
 
 ---
 
@@ -176,10 +204,30 @@ SteamOS 的 `/tmp` 是 tmpfs（吃内存）。GE-Proton（约 500MB）、makepkg
   不是 WorkBuddy 本身的参数问题。
 - `verify_step` 对 `setup_im` 的判据是 `ibus` 已装 **且** 三个中文引擎之一已装。
 
-### [3] WorkBuddy —— rootfs 空间 + AUR
+### [3] WorkBuddy —— rootfs 空间 + AUR + /home 自持化
 
 - `/opt` 在 SteamOS 上是 bind mount 到 `/home` 分区（`/.steamos/offload/opt`），那 818M
   **不占 rootfs**；真正占 rootfs 的是 `/usr` 下的 electron（约 349M）+ 编译最小集（约 229M）。
+- **原子升级后 WorkBuddy 的真实命运**（重要，别再当成"整个被冲掉"）：
+  | 部件 | 位置 | 升级后 |
+  |---|---|---|
+  | 主体 `/opt/WorkBuddy` | `/opt` → offload 到 home 分区 | ✅ **幸存** |
+  | 入口 `/usr/bin/workbuddy` | rootfs | ❌ 冲掉 |
+  | 运行时 系统 `electron` | rootfs `/usr` | ❌ 冲掉 |
+  | pacman 记录 | rootfs var | ❌ 冲掉（`pacman -Qq workbuddy` 判"没装"→ 会重装） |
+  所以升级后的表象是"主体在、但没运行时没入口"，看起来像没了。
+- **对策 = `install-workbuddy-home.sh`**（步骤[3]尾部自动调用）：把入口与运行时搬进
+  `/home`，与 `/usr`/pacman 解耦 →
+  `~/.local/opt/wb-electron/`（自带运行时）+ `~/.local/bin/workbuddy`（入口）+
+  `~/.local/share/applications/workbuddy.desktop`（+ 图标一起搬，否则升级后图标也没）。
+  升级后零操作即可启动；缺件时跑 `bash install-workbuddy-home.sh --check` 看报告。
+- ⚠️ **别把 `/opt/WorkBuddy` 搬进 `/home`**：AUR PKGBUILD 在 `build()` 里
+  `sed -i "s/process.resourcesPath/'\/opt\/WorkBuddy'/g"`，把 app 内的资源路径**硬编码**
+  成了字面量 `/opt/WorkBuddy` —— 挪走必崩。而且 `/opt` 本来就在 home 分区，本就不用挪。
+  同理 `/usr/local` 也是 offload 的，所以 `/usr/local/bin/workbuddy` 软链做命令行入口也持久。
+- **沙箱**是 WorkBuddy 应用自身的设置（`~/.workbuddy/settings.json` 的 `sandbox.enabled`），
+  与装在哪无关；`--sandbox-off` 可关。**Flatpak 版才会被 bubblewrap 关住**（碰不到 /etc、
+  systemd），所以坚持用 AUR 原生版，不要换 Discover/flatpak。
 - 空间预检是**自适应的**：只累加「未安装项 + 200M 缓冲」，不要改回"从零算 768M"的
   硬门槛 —— 那会在二次重跑时被误拦死循环。
 - 编译用「最小集」`make gcc binutils pkgconf fakeroot debugedit`（约 229M），
@@ -810,7 +858,7 @@ state 里没记录的（从没装过的，比如 dsh）不会趁机新装 ——
 |---|---|---|---|
 | `[1]` archlinuxcn 源 | `/etc/pacman.conf` | 被冲 | 🔧 重建 |
 | `[2]` IBus 输入法 | pacman → `/usr` | 包没了 | 🔧 重装（占 rootfs ~146M） |
-| `[3]` WorkBuddy | pacman → `/opt`（p8）+ wrapper | 被冲 | 🔧 重装（主体在 p8，不占 rootfs） |
+| `[3]` WorkBuddy | 主体 `/opt`（p8）+ 入口/运行时在 `/home`（自持化后） | ✅ 幸存 | ⏭ 跳过（自持化前会被冲，需 🔧 重装；见 1.x [3] 节） |
 | `[4]` 背键 + inputplumber | `/etc` unit/udev/devices.d | 被冲 | 🔧 重建 |
 | `[5]` Decky Loader | 主体 `/home`（幸存）+ `/etc` unit（被冲） | 部分 | 🔧 重建 unit |
 | `[6]` 游戏 / Proton | `/home` | ✅ 幸存 | ⏭ 跳过 |
@@ -819,6 +867,8 @@ state 里没记录的（从没装过的，比如 dsh）不会趁机新装 ——
 | `[10]` 境内 NTP | `/etc/systemd/timesyncd.conf.d/` | 被冲 | 🔧 重建 |
 | `[11]` GPU 建议 | 纯提示 | — | ⏭ 跳过 |
 | `[12]` 自愈服务 | 服务在 `/home`，sudoers 在 `/etc` | 部分 | 🔧 重建 sudoers |
+| `[13]` wiliwili | flatpak `--user` → `/home` | ✅ 幸存 | ⏭ 跳过 |
+| `[14]` LocalSend | 程序在 `/home`（`~/.local/opt/localsend`）；**防火墙规则在 `/etc/firewalld`** | 部分 | 🔧 重建（`verify_step` 双判据会把"程序在但搜不到对端"识别为待重建；也挂进了自愈清单） |
 
 **幸存不需要管的**：游戏本体、Proton（GE/DW）、Steam 前缀 `compatdata`、
 Decky 插件与其配置、非 Steam 快捷方式、dconf 输入法配置、脚本进度文件。
@@ -867,6 +917,88 @@ Decky 插件与其配置、非 Steam 快捷方式、dconf 输入法配置、脚�
 | 同上 | ⑧ GPU 峰值内存用字符串排序 → `9.5 MB` 排在 `73.2 MB` 后，结果严重偏低 | ✅ 改 `awk` 归一到 MB 后 `sort -g`，实测从 73.2 MB 修正为 334.1 MB |
 | `install-dwproton.sh` | ⑨ 下载用 `mktemp` 临时目录，`-C -` 续传形同虚设，268MB 包在 76% 被 HTTP/2 reset 后全废 | ✅ 改固定目录 `~/Downloads/dwproton-dl/` + `--http1.1` + 6 次重试续传 |
 | 同上 | ⑩ 默认版本是 11.0-12，而上游说 >10.0-26 跑不起来 | ✅ 默认改为 10.0-26（注：本机最终不需要 dwproton，见 [6h]） |
+
+---
+
+## 3.10 通用套路：把应用改成「/home 自持」（2026-09-24 定案）
+
+已用于 **WorkBuddy**（`install-workbuddy-home.sh`）与 **Firefox Nightly**
+（`install-firefox-nightly-home.sh`）。以后再有"某某应用一升级就没了"照这个来。
+
+### 第一步：先分清哪些会被冲（别凭印象）
+
+```bash
+findmnt -no SOURCE --target /opt          # 与 / 的 SOURCE 不同 → 是 offload, 幸存
+findmnt -no SOURCE --target /usr/local
+```
+
+| 位置 | 原子升级后 |
+|---|---|
+| `/home` | ✅ 幸存 |
+| `/opt`、`/usr/local`、`/root`、`/srv` | ✅ **幸存**（bind-mount 到 `/home` 分区 `/home/.steamos/offload/*`） |
+| `/etc` | ❌ 被冲（overlay，upper 在 `/var`） |
+| `/usr`、`/var`、pacman 数据库 | ❌ 被冲 |
+
+⚠️ **最常见的误判**：以为"装到 `/opt` 就没事"或"`/opt` 也会被冲"。两者都错 ——
+要看的是它的**入口和运行时**在哪：`/usr/bin/<app>` + `/usr` 里的依赖照样会没，
+所以表象常是"主体还在、但打不开"。
+
+### 第二步：四条搬运原则
+
+1. **程序本体** → `/home`。但**若上游把安装路径硬编码进程序内部**（WorkBuddy 的
+   `process.resourcesPath` 被 PKGBUILD 改成字面量 `/opt/WorkBuddy`），就**别挪**——
+   `/opt` 本来就幸存，留在原地风险最低。
+2. **入口 wrapper** → `~/.local/bin/<app>`。**绝不写回 `/usr/bin`**（那正是会被冲的地方）。
+3. **桌面项 + 图标** → `~/.local/share/{applications,icons}`。
+   **图标一定要跟着搬** —— `/usr/share/icons` 在 rootfs 上，升级后图标会一起消失，
+   菜单里只剩个没图的空壳。
+4. **运行时依赖**（electron、自带的浏览器内核等）→ 也放 `~/.local`，
+   不要依赖 `/usr` 里的 pacman 包。`:~/.local/bin` 若不在 PATH，桌面项写绝对路径即可；
+   也可在 `/usr/local/bin` 放软链（该目录同样 offload，扛升级）。
+
+### 第二步之二：选哪种发行物（deb / AppImage / 官方 tar）
+
+**优先选"自带运行时"的那一种** —— SteamOS rootfs 上缺的库装起来既吃空间又会被升级冲掉。
+
+判据：把 deb 的 `Depends` 拉出来看（`ar x` 解 deb → `control.tar.*` 里的 `control`），
+里面每多一个 `libwebkit*` / `libgtk-*` / `libappindicator*` 这类大件，deb 方案就多一层
+"要 pacman 装系统库 + 每次升级重装"的负担。
+
+- 实例（2026-09-24）：`deepseek-harness-desktop` 的 deb `Depends: libappindicator3-1,
+  libwebkit2gtk-4.1-0, libgtk-3-0` —— SteamOS 全没有；同版本 AppImage 90M 自带这些运行时
+  → **选 AppImage**，解压到 `/home`。
+- **第三种情况：deb 自己就认 `/opt`**。用 range 请求只取 deb 头部（`control.tar.*`
+  排在 `data.tar.*` 前面，所以取前 3MB 就够）解出 `control`，看两行：
+  `Relocations:` 与 `Installed-Size:`。WPS 的官方 deb 写的是 `Relocations: /opt/kingsoft`
+  + 1.55GB → 按官方布局装到 `/opt` 最省事（`/opt` 是 home 分区的 bind mount）。
+  **别学 AUR 把它重定位到 `/usr/lib`** —— 1.55GB 进 5G rootfs 必炸。
+  顺手还能拿到权威的 `Depends`，比抄 AUR 手工维护的清单可靠。
+- AppImage 落地方式：`chmod +x` 后先试**直接跑**（这样应用内自更新能替换它自己），
+  同时 `./X.AppImage --appimage-extract` 留一份解压树；入口里判断 `libfuse.so.2`
+  是否可用（`ldconfig -p`），不可用就走解压树 —— **完全不依赖 `fuse2` 这个系统包**。
+  `--appimage-extract` 是 AppImage runtime 自带能力，不需要 FUSE。
+- tar/xz 类（如 Firefox）：直接解压到 `/home`，注意大文件下载别用 `mktemp`。
+- 通用禁忌：**不要为了装一个可选应用去 pacman 装一堆系统库** —— 那等于把这应用绑死在
+  会被冲的 rootfs 上，前功尽弃。
+
+### 第三步：脚本骨架（三个范例都是这套）
+
+- 默认动作 = 安装/更新（幂等）；`--check` = 只读自检，**升级后先跑这个**；
+- 版本（+语言/变体）没变就跳过重装，`--force` 兜底；
+- 大文件下载：**固定缓存目录** + `-C -` 续传 + `--http1.1`（**别用 `mktemp`，续传会失效**）；
+  多源择优、失败自动回退（本机实测：同一文件 `archive.mozilla.org` 比官方 cdn 快一两个数量级）；
+- 原子替换 + 留一份 `.prev` 回滚位；替换前用 `pgrep` 确认进程没在跑；
+- 以 root 跑时先解析 `REAL_USER`/`REAL_HOME`（`SUDO_USER` → `getent passwd`），
+  **不要写死 `/home/deck`**；
+- 判据不要引用未定义变量：`set -u` 下它静默变空串，`[ -x "/.local/..." ]` 恒假；
+- `findmnt` 读不到时**别让两个空值相等就判过**（假阳性），要显式要求非空。
+
+### 第四步：收尾三件事（缺一就容易烂掉）
+
+1. 接进 `可选组件安装.sh`：`MENU_ORDER`/`MENU_NAME`/`MENU_PKGS` 三处 + `case` 分支；
+   非 pacman 装的项还要在 `MENU_CHECK` 注册"是否已装"判据，否则菜单 ✓ 永远不亮。
+2. `check.sh` 加断言 —— **必须断言"安装目标在 `/home` 下"**，否则将来有人改个路径就白做了。
+3. README + 本文件登记（含 rootfs 回收口径的变化）。
 
 ---
 
@@ -979,7 +1111,8 @@ rootfs 只剩一个几字节的软链。
 1. **btrfs 元数据平衡**（零数据风险）：`Metadata,DUP` 分配 493M 但实占仅 191M，
    `btrfs balance start -musage=30/60/90 /` 可回收 **~300M**。
 2. **删无依赖包**：`gcc` 212M（无任何包依赖）、孤儿包（asar/debugedit/fakeroot/pkgconf）。
-3. **删 firefox** 290M（无依赖，但会失去自带浏览器，需用户确认）。
+3. **删 firefox** 290M（无依赖。若已用 `install-firefox-nightly-home.sh` 把
+   Firefox Nightly 装进 `/home`，删掉**不损失浏览器**；否则会失去自带浏览器，需用户确认）。
 4. ~~**zstd 重压缩**（高级）：rootfs 默认未启用压缩~~
    **❌ 2026-09-09 实测证伪，别再跑。** 抽样 `/usr` 下 10 个 >5M 的文件，
    **10/10 都带 `btrfs.compression="zstd"` xattr** → rootfs **早就全局启用 zstd 压缩**了
@@ -1022,3 +1155,55 @@ rootfs 只剩一个几字节的软链。
 这台是 **GPD Win5 + SteamOS**，脚本已把背键映射、inputplumber 目标、TDP 分档、断点续传
 全部调好并逐环实测过。改脚本最怕的是"把修好的坑改回去"——尤其 systemd 依赖成环、
 输入法方案回退、硬编码路径这三类。**改前读第 2、7 节，改后必跑 `bash -n`，真机回归。**
+
+---
+
+## 9. 发布前审查（2026-09-24）与外部依赖体检
+
+### 9.1 先跑这个：`verify-upstreams.sh`
+
+所有外部地址都是"外部事实"，上游随时会变（改名 / 下线 / 加签名 / 换路径）。
+**发布前、重装前、隔一段时间**各跑一次：
+
+```bash
+bash verify-upstreams.sh            # 全查(需联网)
+bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
+```
+
+它把本项目依赖的东西集中探一遍：各 repo 的 release API、**镜像前缀**、
+每个应用的下载地址、AUR 包、archlinuxcn 包。退出码 0 = 关键项全通。
+
+**两个设计要点（别改回去）**：
+1. **区分"下载路径"与"API 路径"**。实测（2026-09-24）：`ghfast.top` 与 `ghproxy.net`
+   **对 `api.github.com` 一律 403** —— 它们只代理下载路径。所以 API 镜像链里只能留
+   `gh-proxy.com`，把前者列进去只会白等超时。
+2. **GitHub 资源按脚本真实的"镜像优先"顺序判定**。本机（Windows 沙箱）直连 github.com
+   不通是常态，若把"直连失败"当关键失败，工具在开发机上会天天误报。要按
+   `gh-proxy → ghfast → ghproxy.net → 直连` 的顺序，命中即通过。
+
+### 9.2 本次审查的三个实质发现（都已修）
+
+| 发现 | 事实（实测） | 处置 |
+|---|---|---|
+| **WPS 取源过时** | 官方现行中文版 **12.1.2.28080**（545MB / 装后 2.07GB），且改成「`Linux2023` 通道 + 时间戳签名」`?t=<ts>&k=md5(key+uri+ts)`；老静态 URL 只剩 2022 年的 11.1.0 | 脚本改为按官方签名方案构造 URL，老通道降级兜底。新版本 control 仍是 `Relocations: /opt/kingsoft` → /opt 设计不变 |
+| **AUR 两版 WPS 都进 rootfs** | `wps-office` 与 `wps-office-cn` 的 PKGBUILD 都 `sed /opt/kingsoft/wps-office → /usr/lib`，2GB 进 5G rootfs | 确认"官方 deb → /opt"是唯一可行解；`check.sh` 加了"代码里不得出现 `/usr/lib/office6`"断言（注释里提到不算） |
+| **微信条目必然失败** | 下 archlinuxcn 的 db 逐项确认（4683 个包）**没有任何微信包** | `install_wechat` 增加 AUR 回退（yay/paru），并明确提示"这条路装进 /usr，升级会被冲" |
+
+### 9.3 静态审查基线
+
+- **`shellcheck -S warning` 对全部脚本 = 0 条**。装法：把 `shellcheck(.exe)` 放 `tools/`，
+  `check.sh` 第 3 节会自动用它（并把范围从"只查主脚本"扩到全部）。
+- 已修的**高危**项：`rm -rf "$VAR/..."` 在变量为空时会变成 `rm -rf "/"` ——
+  `install-decky-tdp.sh` 卸载路径与 `install-ge-proton.sh` 的 `$TAG` 都中过，现已加 `${VAR:?}`。
+  **新写 `rm -rf` 时如果路径拼了变量，一律加 `:?`。**
+- 大文件下载**不要用 `mktemp`**：随机目录名会让 `-C -` 续传永久失效（仓库里踩过两次，
+  `install-ge-proton.sh` 还额外把 509MB 下到了 tmpfs 的 `/tmp`）。用固定缓存目录。
+- `find ... | xargs` 遇空格/换行文件名会拆错 → 用 `find ... -exec cmd {} +`。
+
+### 9.4 有意留下的取舍：不做公共库
+
+4 个 `install-*-home.sh` 之间有约 120 行/份的重复铺垫（颜色、提权、镜像、入口生成、
+桌面项/图标搬运）。抽一个 `lib/` 能省约 480 行，但**会破坏"单个脚本能独立拷贝到新机器"
+这一核心价值**（本包的设计前提就是"解压到 Downloads 就能跑，不依赖旧机器任何文件"）。
+故选择保留重复，用**断言**来防漂移：新脚本的落地路径、判据、菜单挂接都有 `check.sh` 断言兜底。
+若哪天决定改走公共库，先确认"单脚本可独立拷贝"不再是需求。

@@ -8,6 +8,12 @@ __pycache__/
 .workbuddy/
 todo/
 
+# ---- 第三方二进制(6MB, 不进公开仓库; 想本地用自己放一个到 tools/) ----
+# check.sh 第 3 节会自动识别 tools/shellcheck(.exe);
+# 若确实希望仓库自带, 删掉下面这行即可。
+tools/shellcheck
+tools/shellcheck.exe
+
 # ---- 系统杂项 ----
 .DS_Store
 Thumbs.db
