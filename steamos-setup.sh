@@ -900,7 +900,7 @@ setup_wb() {
             # 兜底: 从 AUR git 构建(在用户家目录做, 避免 /tmp 权限问题)
             sub "从 AUR 源码构建 yay(约几分钟)..."
             local YAYDIR; YAYDIR="$(homedir .cache/yay-aur-build)"
-            rm -rf "$YAYDIR/yay"
+            rm -rf "${YAYDIR:?}/yay"      # :? 守卫: YAYDIR 为空时宁可报错, 别删错路径
             if runuser -u "$REAL_USER" -- git clone --depth 1 https://aur.archlinux.org/yay.git "$YAYDIR/yay" 2>&1 | tail -2; then
                 ( cd "$YAYDIR/yay" && runuser -u "$REAL_USER" -- makepkg -si --noconfirm --needed 2>&1 | tail -5 )
             fi
@@ -1818,8 +1818,11 @@ setup_games() {
             local TARBALL="${TAG}-x86_64.tar.gz"
             # ⚠️ /tmp 在 SteamOS 上是 tmpfs(吃内存), 500MB 的包别往里下 ——
             #    与 makepkg 的 BUILDDIR 同理, 挪到 /home 下的缓存目录。
-            mkdir -p "$REAL_HOME/.cache" 2>/dev/null
-            local TMP; TMP="$(mktemp -d "$REAL_HOME/.cache/gep.XXXXXX")"
+              mkdir -p "$REAL_HOME/.cache" 2>/dev/null
+              # 固定目录, 不用 mktemp: 随机目录名会让 -C - 续传永久失效(500MB 白下)。
+              # 与独立脚本 install-ge-proton.sh 保持同一做法。
+              local TMP="$REAL_HOME/.cache/ge-proton"
+              mkdir -p "$TMP" || { err "无法创建缓存目录"; return 1; }
             local ok=0 u
             # 依次试多个镜像(境内直连 GitHub 常失败)
             local -a bases=("$MIRROR/$GH/$REPO" "$GH/$REPO" \

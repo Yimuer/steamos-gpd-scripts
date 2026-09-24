@@ -184,7 +184,8 @@ while true; do
     done
     echo "  0. 退出"
     printf "选择要安装的编号(可多选, 空格分隔, 直接回车=退出): "
-    read -r -a picks || break
+    # -t 守卫: 非交互环境(被管道/定时调用)下裸 read 会永久挂起
+    read -r -t 300 -a picks || break
     [ "${#picks[@]}" -eq 0 ] && break
     for n in "${picks[@]}"; do
         case "$n" in
