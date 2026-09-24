@@ -1,0 +1,8 @@
+#!/bin/sh
+# pre-commit: 提交前强制自检(check.sh 不过 = 拒绝提交)
+# 教训来源: 2026-09-24 heredoc 击穿事故, 语法损坏的脚本差点入库。
+echo "── pre-commit: bash check.sh ──"
+bash "$(dirname "$0")/../check.sh" || {
+    echo "✗ check.sh 未通过, 提交已拒绝。修复后重试(check.sh 全绿才可入库)。"
+    exit 1
+}

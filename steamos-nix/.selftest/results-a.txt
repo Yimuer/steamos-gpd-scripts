@@ -1,0 +1,157 @@
+
+── A1 ─────────────
+[PASS] bash -n 全部脚本 (25 个)
+[PASS] py_compile 全部 py (3 个)
+
+── A2 ─────────────
+[PASS] lib.nix 引用的 config/ 路径全部存在 (7 处)
+[PASS] config/ 下每个文件都被 lib.nix 或 install.sh 消费 (8 个)
+
+── A3 ─────────────
+[PASS] ntp.conf.in: @占位符@ ⊆ 构建期替换键
+[PASS] steamos-nix.in: @占位符@ ⊆ 构建期替换键
+[PASS] gpd-win5-backkeys.service.in: @占位符@ ⊆ 构建期替换键
+
+── A4 ─────────────
+[PASS] vendored daemon 自 `import glob` 起与主脚本逐字节一致  → embedded=4177B/1f92df4a vendored=4177B/1f92df4a
+[PASS] vendored 版额外自带 shebang + 归属说明(预期差异)  → 头部 393 字节为新增 header
+
+── A5 ─────────────
+[PASS] pythonWithVdf 覆盖脚本的第三方 import  → 已注入: vdf,yaml
+
+── A6 ─────────────
+[PASS] #steamos-tools 有 GC root  → nix profile install → 间接 GC root
+[PASS] #steamos-etc 有 GC root  → nix build --out-link → GC root
+[PASS] #steamos-nix-activate 有 GC root  → nix profile install → 间接 GC root
+[PASS] #workbuddy 有 GC root  → nix profile install → 间接 GC root
+
+── A7 ─────────────
+[PASS] cfg.activatePath ⊂ cfg.stateDir  → /home/deck/.steamos-nix/bin/steamos-nix-activate ⊂ /home/deck/.steamos-nix
+[PASS] heal unit 调用稳定路径
+[PASS] sudoers 放行单条命令(允许附加参数)  → @USER@ ALL=(ALL) NOPASSWD: @ACTIVATE@
+[PASS] install.sh 不会把 STATE 装到 /root  → root 门禁已就位 → $HOME 恒为 deck 家目录
+
+── A8 ─────────────
+[PASS] heal unit 不会无限重试
+
+── A9 ─────────────
+[PASS] steamos-etc 通用落点 = 2  → 实际 2: /etc/systemd/timesyncd.conf.d/ntp.conf, /etc/sudoers.d/steamos-nix
+[PASS] steamos-etc Win5 条件落点 = 4  → 实际 4: /etc/systemd/system/gpd-win5-backkeys.service, /etc/udev/rules.d/70-gpd-backkeys.rules, /etc/inputplumber/devices.d/20-gpd_win5.yaml, /etc/inputplumber/capability_maps.d/20-gpd_win5.yaml
+[PASS] machine.nix=desktop → 实际落点数 2  → 通用 2 + Win5 4(条件)
+[PASS] machine.nix 机型值合法  → desktop
+[PASS] lib.nix 有 isWin5 条件分支
+
+── A10 ─────────────
+[PASS] 被 wrap 的脚本不会往只读 store 里写文件  → 已由 --set-default DAEMON_SRC 缓解(DAEMON_SRC 预先指向 store 真路径, 不再走 heredoc 分支) | 原始风险: setup-win5-backkeys.sh: 以 $(dirname $0) 为基目录并写入 cat > "$DAEMON_SRC" —— nix store 只读
+
+── A11 ─────────────
+[PASS] 脚本期望的同级资源确实会进 $out/bin  → 已由 --set-default CAPMAP_SRC 缓解(直接指向 config/ 下的真身) | 原始风险: steamos-setup.sh 期望同级资源 20-gpd_win5.capmap.yaml} —— 该文件不在 scripts/ 下, 不会进 $out/bin
+
+── A12 ─────────────
+[PASS] 存在机型探测脚本
+[PASS] detect 覆盖三种机型
+[PASS] detect 有 DMI + 电池 + Win5 HID 三条判据
+[PASS] detect 能写 machine.nix
+[PASS] install.sh 会调用 detect 并有 --machine 参数
+[PASS] flake 会 import machine.nix
+[PASS] activate 只在 unit 存在时才操作背键服务(机型无关兜底)
+
+── A13 ─────────────
+[PASS] D1 steamos-etc 有 GC root(--out-link)
+[PASS] D2 python 注入含 pyyaml
+[PASS] D3 链接指向 store 真路径(real_src)
+[PASS] D4 用 while-read 遍历(不再 for-in-$find)
+[PASS] D5/D6 set-default DAEMON_SRC / CAPMAP_SRC
+[PASS] D7 install.sh 拒绝 root
+[PASS] D8 heal unit 有 StartLimitBurst
+[PASS] sudoers 兜底分支不再绕过 visudo
+
+── A14 ─────────────
+[PASS] flake 放行 unfree(WPS/微信都是专有)
+[PASS] WPS 使用中文版
+[PASS] WPS 属性带缺失兜底
+[PASS] 微信属性带缺失兜底
+[PASS] packages 里过滤 null 属性(否则 nix flake show 失败)
+[PASS] 提供 x11 变体(Wayland 下 Qt 应用兜底)
+[PASS] 含 CJK 字体集
+[PASS] install.sh 会把 .desktop 链到 /home
+[PASS] install.sh 会写 fontconfig <dir>
+[PASS] apps 可关闭(不强行塞给掌机)
+
+── A15 ─────────────
+[PASS] lib.nix 自建 harmonyos-sans derivation
+[PASS] 字体源 = 华为官方 zip(已实测 HTTP 200, 52MB)
+[PASS] fetchzip stripRoot=false(与社区记录的 hash 取法一致)
+[PASS] hash 来自 flake cfg, 不硬编码在 lib 里
+[PASS] cfg.harmonySansHash 填的是真 hash(非 fakeSha256)  → sha256-c10AIlce3WSqzKI9cq9LoobRJHgbqnzBo/d958Acz/A=
+[PASS] license = unfree(华为授权可嵌入、不可单独再分发)
+[PASS] flake 有 cjkFont 三态开关(harmony-sans|noto|none)
+[PASS] installPhase 正确引用带空格的目录名
+[PASS] installPhase 只捞 .ttf
+[PASS] ★ 排除 AppleDouble(._xxx.ttf 也匹配 '*.ttf', 会混进字体目录)
+[PASS] 捞空即失败(上游 zip 结构变了不会静默装个空包)
+[PASS] 字体族名与 ttf name 表实测一致: HarmonyOS Sans SC
+[PASS] ★ 字体与应用解耦: steamos-apps 不含 steamos-cjk-fonts  → paths = lib.filter (p: p != null) [ wps-office wechat localsend ]
+[PASS] install.sh 单独构建字体且失败只降级(不中断整条安装)
+[PASS] install.sh 给出可执行的 hash 修复指引(got: → harmonySansHash)
+[PASS] install.sh 写 fontconfig <prefer>(只给 <dir> 中文仍会被抢)
+[PASS] prefer 只覆盖 sans-serif/serif(不污染 monospace)
+[PASS] 空族名时不写 alias(cjkFont=none 场景)
+[PASS] fontconfig 渲染器在 set -euo pipefail 之前(busybox ash 无 pipefail)
+[PASS] 主流程复用同一渲染器(不复制第二份 XML)
+
+── A16 ─────────────
+[PASS] lib.nix 引用 pkgs.localsend 且有缺失兜底
+[PASS] localsend 进 steamos-apps
+[PASS] localsend 有 x11 变体(GTK/Flutter 用 GDK_BACKEND 而非 QT_QPA_PLATFORM)
+[PASS] mkX11VariantFor 参数化了 env, WPS/微信仍走 QT 分支
+[PASS] flake 暴露 localsend 属性
+[PASS] install.sh 把 localsend 装进 profile
+[PASS] install.sh 提示 53317 端口(组播发现 + 传输)
+[PASS] README 记录 LocalSend 防火墙要求
+
+── A17 ─────────────
+[PASS] ★ 优先 exec 系统原生 wrapper(WorkBuddy 本体不进 nix)
+[PASS] 系统 wrapper 必须是真实文件而非软链(软链可能是旧 nix 版)
+[PASS] ★ 系统 electron 优先于 nix electron(ABI 与本机 native 模块一致)
+[PASS] nix electron 只在兜底分支出现一次
+[PASS] 兜底时明确告警功能可能受限
+[PASS] ★ 禁用 chromium sandbox(--no-sandbox + ELECTRON_DISABLE_SANDBOX)
+[PASS] 系统路径排在 nix runtimePath 之前(看得见系统 dbus/portal/输入法)
+[PASS] 追加系统库路径给 native .node(且不覆盖已有 LD_LIBRARY_PATH)
+[PASS] 输入法统一 IBus, 且 Wayland 下**不**强设 GTK/QT_IM_MODULE  → Wayland 下强设 GTK/QT_IM_MODULE 会让 Electron 走 XWayland 的 IM 模块 → 候选框不跟随
+[PASS] 有 STEAMOS_NIX_WORKBUDDY 强制开关(system|nix)
+[PASS] install.sh 把系统 workbuddy 视为正常态而非冲突
+[PASS] install.sh 在系统 wrapper 缺失时给出 AUR 安装建议
+[PASS] README 写明 WorkBuddy 不进 nix
+[PASS] 有对应的提取器与沙盒用例(extract-workbuddy.py / B13)
+
+── A18 ─────────────
+[PASS] home-module 传齐 lib.nix 需要的 cfg 键(10 个)  → 已传: ntpServers, machine, installApps, wpsChinese, cjkFont, harmonySansHash, workbuddyDir, workbuddyElectron, workbuddyFlags, dshTarballHash, dshNpmDepsHash
+[PASS] 每个 cfg 键都有对应的 lib.mkOption 声明
+[PASS] machine 选项是枚举(挡住非法机型值)
+[PASS] cjkFont 选项是枚举(harmony-sans|noto|none)
+[PASS] electronPackage 注释标明仅兜底
+
+── A19 ─────────────
+[PASS] 存在 IBus + 小鹤双拼配置脚本
+[PASS] ★ 小鹤双拼 = Rime 的 double_pinyin_flypy(默认方案)
+[PASS] Rime 配置目录为 ibus-rime 的 ~/.config/ibus/rime
+[PASS] 重新部署会先删 default.yaml(不删不会重算)
+[PASS] ★ 环境变量会话自适应: Wayland 只设 XMODIFIERS 并 unset GTK/QT
+[PASS] X11/XWayland 分支才设全套 GTK/QT/XMODIFIERS
+[PASS] ★ 配 kwinrc [Wayland] InputMethod(Wayland 原生应用打不出中文的根因)
+[PASS] kwinrc 用探测而非硬编码 IBus desktop 路径
+[PASS] ★ systemd unit 同时挂 graphical-session + gamescope-session
+[PASS] unit 读 gamescope 的 DISPLAY(EnvironmentFile, 缺失不报错)
+[PASS] unit 有 StartLimitBurst(不无限重试)
+[PASS] ★ 主动检测 fcitx5 残留并给出清理命令(两套框架会抢 DBus 名)
+[PASS] 有 --check 只读体检模式
+[PASS] ★ 刻意用 POSIX sh(沙盒里能直接跑做回归)
+[PASS] install.sh 会调用它
+[PASS] ★ 旧的 setup-fcitx5-flypy.sh 已废弃(直接退出, 不误用)
+[PASS] 游戏模式脚本不再依赖 fcitx5-steam-ibus-frontend 桥接包
+[PASS] 游戏模式脚本复用 ibus-daemon unit(不再另起一套)
+[PASS] lib.nix workbuddy 转发器已无 fcitx 残留
+
+════════ 静态部分: 117 通过 / 0 失败 ════════

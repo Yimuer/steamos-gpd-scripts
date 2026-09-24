@@ -1,0 +1,9 @@
+# Managed by the steamos-nix flake. steamos-nix-activate installs this as
+# /etc/sudoers.d/steamos-nix (mode 0440, visudo-validated) because sudo
+# refuses oddly-permed sudoers files — a symlink into the read-only store
+# (0444) may trip its mode check, so the activator copies this small file.
+#
+# Grants the login user password-less execution of *only* the nix re-link
+# activator, so the persistent user-level self-heal unit can restore the
+# wiped /etc symlinks at boot without a broad sudoers grant.
+@USER@ ALL=(ALL) NOPASSWD: @ACTIVATE@

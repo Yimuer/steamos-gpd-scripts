@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+
+    # explicit PATH: runs fine under sudo's stripped environment
+    export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin"
+    set -u
+    MODE=apply
+    PREFIX=${STEAMOS_NIX_PREFIX:-}
+    STATE=${STEAMOS_NIX_STATE:-}
+    if [ -z "$STATE" ]; then STATE="/home/deck/.steamos-nix"; fi
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --check) MODE=check ;;
+        --state) shift; STATE=$1 ;;
+        --prefix) shift; PREFIX=$1 ;;
+        --quiet|-q) QUIET=1 ;;
+        *) echo "usage: steamos-nix-activate [--check] [--state DIR] [--prefix DIR] [--quiet]" >&2; exit 64 ;;
+      esac
+      shift
+    done
+    QUIET=${QUIET:-0}
+    say() { [ "$QUIET" = 1 ] || echo "$@"; }
+    err() { echo "$@" >&2; }
+
+    ETC_DIR="$STATE/etc-current/etc"
+    if [ ! -d "$ETC_DIR" ]; then
+      err "[steamos-nix-activate] missing $ETC_DIR — run install.sh from the steamos-nix flake first."
+      exit 1
+    fi
+
+    if [ "$MODE" = apply ] && [ -z "$PREFIX" ] && [ "$(id -u)" != 0 ]; then
+      err "[steamos-nix-activate] apply mode needs root (sudo steamos-nix-activate), or pass --prefix for a sandbox dry run"
+      exit 1
+    fi
+
+    # ── rootfs write gate (SteamOS mounts / ro by default) ──
+    if [ "$MODE" = apply ] && [ -z "$PREFIX" ]; then
+      if ! touch /etc/.steamos-nix-wtest 2>/dev/null; then
+        if command -v steamos-readonly >/dev/null 2>&1; then
+          steamos-readonly disable || true
+        fi
+        if ! touch /etc/.steamos-nix-wtest 2>/dev/null; then
+          mount -o remount,rw / 2>/dev/null || true
+        fi
+        if ! touch /etc/.steamos-nix-wtest 2>/dev/null; then
+          err "[steamos-nix-activate] /etc is not writable even after steamos-readonly disable; aborting."
+          exit 1
+        fi
+      fi
+      rm -f /etc/.steamos-nix-wtest
+    fi
+
+    # ── sanity: warn if /nix shares the rootfs device (survival premise) ──
+    if command -v findmnt >/dev/null 2>&1 && [ "$MODE" = apply ]; then
+      nix_src=$(findmnt -no SOURCE /nix 2>/dev/null || true)
+      root_src=$(findmnt -no SOURCE / 2>/dev/null || true)
+      if [ -n "$nix_src" ] && [ "$nix_src" = "$root_src" ]; then
+        case "$nix_src" in
+          *overlay*) say "[steamos-nix-activate] NOTE: /nix resolves onto the volatile rootfs image — content may NOT survive the next atomic update." ;;
+        esac
+      fi
+    fi
+
+    CHANGED=0
+    MISSING=0
+    FILELIST="$(mktemp 2>/dev/null || echo /tmp/.steamos-nix-filelist.$$)"
+    trap 'rm -f "$FILELIST" 2>/dev/null' EXIT
+    find "$ETC_DIR" -type f | sort > "$FILELIST"
+    while IFS= read -r src_file; do
+      [ -n "$src_file" ] || continue
+      tgt="$PREFIX$(echo "$src_file" | sed "s#^$STATE/etc-current##")"
+      case "$MODE" in
+        check)
+          if [ ! -e "$tgt" ]; then
+            err "MISSING $tgt"
+            MISSING=1
+          fi
+          ;;
+        apply)
+          mkdir -p "$(dirname "$tgt")" || { err "[steamos-nix-activate] mkdir failed: $tgt"; MISSING=1; continue; }
+          case "$tgt" in
+            */sudoers.d/*)
+              # sudo enforces 0440/root-owned on sudoers fragments: copy, do not symlink
+              tmp="$tgt.steamos-nix.tmp"
+              if install -m 0440 "$src_file" "$tmp" 2>/dev/null; then
+                if command -v visudo >/dev/null 2>&1 && ! visudo -cf "$tmp" >/dev/null 2>&1; then
+                  err "[steamos-nix-activate] generated sudoers failed visudo — NOT installing it."
+                  rm -f "$tmp"; MISSING=1; continue
+                fi
+                mv "$tmp" "$tgt" || { err "[steamos-nix-activate] sudoers move failed: $tgt"; MISSING=1; }
+              elif install -m 0440 "$src_file" "$tgt" 2>/dev/null; then
+                :
+              else
+                err "[steamos-nix-activate] could not install sudoers: $tgt"
+                MISSING=1
+              fi
+              ;;
+            *)
+              real_src="$(readlink -f "$src_file" 2>/dev/null || echo "$src_file")"
+              if [ "$(readlink -f "$tgt" 2>/dev/null)" != "$real_src" ]; then
+                if ln -sfn "$real_src" "$tgt"; then
+                  CHANGED=1
+                else
+                  err "[steamos-nix-activate] link failed: $tgt -> $real_src"
+                  MISSING=1
+                fi
+              fi
+              ;;
+          esac
+          ;;
+      esac
+    done < "$FILELIST"
+
+    if [ "$MODE" = check ]; then
+      [ "$MISSING" = 0 ] && say "[steamos-nix-activate] all nix-managed /etc entries present."
+      exit "$MISSING"
+    fi
+
+    # ── reload subsystems (skipped in --prefix sandbox runs) ──
+    if [ -n "$PREFIX" ]; then
+      say "[steamos-nix-activate] sandbox (prefix=$PREFIX): $CHANGED link(s) created, live subsystems untouched."
+      exit "$MISSING"
+    fi
+    udevadm control --reload 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+
+    # ── backkeys unit: only for GPD Win5, but activation is machine-aware ──
+    VENDOR=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "")
+    PRODUCT=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "")
+    if { echo "$VENDOR$PRODUCT" | grep -qi GPD && echo "$VENDOR$PRODUCT" | grep -q "G1618-05"; } \
+       || [ "${WIN5_FORCE:-0}" = 1 ]; then
+      systemctl enable --now gpd-win5-backkeys.service 2>/dev/null || true
+      say "[steamos-nix-activate] backkeys daemon enabled (GPD Win5 detected)."
+    else
+      systemctl disable --now gpd-win5-backkeys.service 2>/dev/null || true
+      say "[steamos-nix-activate] not a GPD Win5 ($VENDOR/$PRODUCT): backkeys left disabled."
+    fi
+
+    systemctl restart systemd-timesyncd 2>/dev/null || true
+    say "[steamos-nix-activate] done. nix-managed /etc re-linked from $ETC_DIR."

@@ -1,0 +1,1287 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  SteamOS / Arch 重装后一键配置脚本  (rootfs 最小化版)
+#
+#  设计目标: 用户重装 SteamOS 后, 在无 AI 辅助环境下也能安全、可重跑地
+#  重建本机环境。**所有能放 /home 的软件一律放 /home**, 尽可能少占用
+#  SteamOS 那很小、且会被系统更新覆盖的 rootfs。
+#
+#  组件(各步独立可跑, 幂等, 失败可重跑):
+#    [0] 环境准备: sudo 提权, SteamOS 只读根解除, pacman-key, 补齐官方源
+#    [1] archlinuxcn 源
+#    [2] IBus 原生输入法 + 中文引擎       (SteamOS 自带, 走 Wayland 原生前端; 不装第三方框架)
+#    [3] WorkBuddy  → AUR 包(最可靠能打中文)。**/opt 在 SteamOS 上是 bind mount
+#         到 /home 分区(/.steamos/offload/opt), 那 818M 不占 rootfs**; 真正落在
+#         rootfs 的只有 electron 依赖(约349M) + 编译最小集(约229M), 都在 /usr。
+#         输入见[2]: KWin InputMethod=IBus Wayland 面板(走原生前端)
+#    [4] GPD Win5 背键                    (守护进程 py 放 /home, /etc 只留小unit)
+#    [5] Decky Loader                    (二进制已装 /home/homebrew, /etc 只留小unit)
+#    [6] 游戏支持: GE-Proton + 鸣潮/终末地 Steam 启动辅助
+#    [7] DeepSeek Harness(dsh): 补充的 AI Agent CLI(固定版本, 走 npm)
+#    [8] rootfs 瘦身(可选; [3] 空间不够时会自动先跑一次)
+#
+#  用法:
+#    bash steamos-setup.sh            全量(0→7)
+#    bash steamos-setup.sh --status   查看状态
+#    bash steamos-setup.sh 1 2 4      只装某几步
+#    bash steamos-setup.sh clean      只做 rootfs 瘦身(清 locale/man/doc/缓存)
+#    bash steamos-setup.sh --help
+#
+#  重要:
+#    - 本脚本**自包含**, 不依赖原机器任何文件, 拷到 U 盘即可。
+#    - 每步需 root(自动 sudo, 密码在终端输入); --status 不需要。
+#    - 全程联网。WorkBuddy(AUR)、Decky、GE-Proton、dsh 需联网下载。
+#    - 装完 [2] 请注销重登生效; [3] 若 WorkBuddy 在跑需整个退出重开。
+#    - [6] 游戏本体需你自行从备份放回下载目录(重装会清盘)。
+#
+#  rootfs(SteamOS 只有 5GB,  btrfs 且常无未分配 chunk)已踩过的坑:
+#    - Arch 官方源必须 Include /etc/pacman.d/mirrorlist-arch。SteamOS 自带的
+#      /etc/pacman.d/mirrorlist 指向 steamdeck-packages.steamos.cloud,
+#      取 core.db/extra.db 直接 404。本脚本自建 mirrorlist-arch 并自愈旧配置。
+#    - /opt 是 bind mount 到 /home 分区(/.steamos/offload/opt), 别去 mv /opt
+#      (会报"设备或资源忙"), 也别按"818M 占 rootfs"做容量预检。
+#      真正吃 rootfs 的是 /usr 下的 base-devel + electron。
+#    - 混源纪律: 快照源(core-3.9/extra-3.9)必须排在滚动源(core/extra)之前。
+#      快照优先 → electron/libisl 命中快照(版本匹配系统); 滚动只兜底新包。
+#    - base-devel 是包组, pacman -Q 会展开: 装最小集(make/gcc/binutils/pkgconf
+#      fakeroot/debugedit, 约229M)即可让判定通过, 省整组约370M。
+#    - electron 是元包(体积0.00K), 真实体积在依赖的具体 electron 版本包。
+#    - 手工往终端复制命令时, sed/python 里的反斜杠常被客户端吞($$→LaTeX),
+#      本脚本统一用 heredoc 自执行, 避免该坑。
+# ============================================================================
+
+set -uo pipefail
+
+SCRIPT_NAME="$(basename "$0")"
+
+# ---------- 颜色 / 工具 ----------
+C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_R=$'\033[0m'
+info() { printf "${C_OK}[✓]${C_R} %s\n" "$*"; }
+warn() { printf "${C_WARN}[!]${C_R} %s\n" "$*"; }
+err()  { printf "${C_ERR}[✗]${C_R} %s\n" "$*" >&2; }
+step() { printf "\n${C_DIM}════════ %s ════════${C_R}\n" "$*"; }
+sub()  { printf "${C_DIM}   • %s${C_R}\n" "$*"; }
+
+# ---------- 真实用户(经 sudo 保留原用户) ----------
+if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    REAL_USER="$SUDO_USER"
+else
+    REAL_USER="$(logname 2>/dev/null || echo deck)"
+fi
+REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+REAL_GROUP="$(id -gn "$REAL_USER" 2>/dev/null || echo "$REAL_USER")"
+
+# 是否 Valve SteamOS(holo 只读根)
+IS_STEAMOS=0
+if [ -f /etc/os-release ] && grep -qiE "^(ID|ID_LIKE)=.*steamos|steamos" /etc/os-release 2>/dev/null; then
+    IS_STEAMOS=1
+fi
+# 是否 Arch 主仓库源(core/extra)已配置
+HAS_CORE=0; HAS_EXTRA=0; HAS_ARCHLINUXCN=0
+# 允许行首带 # : 用户可能是"注释掉"而不是删除。若按纯 \[core\] 判定, 就会判定为
+# 缺失 → prepare 每次再追加一份, 末尾那份指向错镜像 → core.db 404 永久复现。
+grep -qE '^\s*#?\s*\[core\]'     /etc/pacman.conf 2>/dev/null && HAS_CORE=1
+grep -qE '^\s*#?\s*\[extra\]'    /etc/pacman.conf 2>/dev/null && HAS_EXTRA=1
+grep -qE '^\s*#?\s*\[archlinuxcn\]' /etc/pacman.conf 2>/dev/null && HAS_ARCHLINUXCN=1
+
+# ---------- 帮助 ----------
+show_help() {
+    awk 'NR==1 {next} { if ($0 !~ /^#/) exit; sub(/^#+ ?/, ""); print }' "$0"
+    echo
+    echo "步骤: 1/cn=archlinuxcn  2/im=IBus原生  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身"
+    echo "输入法引擎: IBUS_ENGINE=libpinyin(默认, 支持小鹤双拼) | rime | pinyin  例: IBUS_ENGINE=rime sudo bash $SCRIPT_NAME 2"
+    exit 0
+}
+
+# ---------- 仅在 /home 写文件的辅助(不碰 rootfs) ----------
+homedir() { mkdir -p "$REAL_HOME/$1" 2>/dev/null; chown -R "$REAL_USER:$REAL_GROUP" "$REAL_HOME/$1" 2>/dev/null; echo "$REAL_HOME/$1"; }
+
+# ===========================================================================
+#  [0] 环境准备
+# ===========================================================================
+prepare() {
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "需要管理员权限(密码在终端输入), 重新以 sudo 运行..."
+        exec sudo -E bash "$0" "$@"
+    fi
+    step "环境准备"
+
+    for c in pacman curl tar jq python3; do
+        command -v "$c" >/dev/null 2>&1 || { err "缺少基础命令: $c"; exit 1; }
+    done
+    info "基础命令齐全"
+    printf "  用户: %s (%s)\n  系统: %s\n" "$REAL_USER" "$REAL_HOME" \
+        "$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2-)"
+    [ "$IS_STEAMOS" -eq 1 ] && echo "  类型: Valve SteamOS(holo)  → 将解除只读根" || echo "  类型: Arch 系"
+
+    # 1) SteamOS 只读解除
+    if [ "$IS_STEAMOS" -eq 1 ]; then
+        if command -v steamos-readonly >/dev/null 2>&1; then
+            if ! steamos-readonly status 2>/dev/null | grep -qiE "disabled|已解除|off"; then
+                sub "解除 SteamOS 只读根 (steamos-readonly disable)..."
+                steamos-readonly disable || { err "解除只读失败"; exit 1; }
+                info "只读已解除"
+            else
+                info "只读根已是可写状态"
+            fi
+        else
+            warn "标记为 SteamOS 但无 steamos-readonly, 假定可写"
+        fi
+    fi
+
+    # 2) pacman-key
+    if [ ! -s /etc/pacman.d/gnupg/pubring.gpg ] || ! pacman-key --list-keys >/dev/null 2>&1; then
+        sub "初始化 pacman 密钥环..."
+        pacman-key --init || { err "pacman-key --init 失败"; exit 1; }
+        if [ "$IS_STEAMOS" -eq 1 ]; then
+            pacman-key --populate archlinux 2>/dev/null && info "populate archlinux 完成" || warn "populate archlinux 失败"
+            # holo 若存在也 populate
+            pacman-key --populate holo 2>/dev/null && info "populate holo 完成" || true
+        else
+            pacman-key --populate archlinux 2>/dev/null || warn "populate archlinux 失败"
+        fi
+    else
+        info "pacman 密钥环就绪"
+    fi
+
+    # 3) Arch 官方仓库 core/extra(依赖它们才有 electron/输入法等)。
+    #    ⚠️ 绝不能复用 SteamOS 自带的 /etc/pacman.d/mirrorlist —— 它指向
+    #    steamdeck-packages.steamos.cloud, 取 core.db / extra.db 直接 404。
+    #    必须自建 mirrorlist-arch(Arch 官方镜像), 并让 core/extra 只 Include 它。
+    local MIRROR_ARCH="/etc/pacman.d/mirrorlist-arch"
+    if [ "$IS_STEAMOS" -eq 1 ] || [ "$HAS_CORE" -eq 0 ] || [ "$HAS_EXTRA" -eq 0 ]; then
+        sub "写 Arch 官方镜像列表 $MIRROR_ARCH ..."
+        cat > "$MIRROR_ARCH" <<'EOF'
+Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch
+Server = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+EOF
+        info "已写 $MIRROR_ARCH(清华/科大/pkgbuild)"
+
+        # 3a) 缺失才追加(用 python 逐行处理, 绕开 sed 转义被吞的老问题)
+        sub "补齐 core/extra 仓库段..."
+        python3 - <<PYEOF
+import re
+conf = "/etc/pacman.conf"
+arch_ml = "$MIRROR_ARCH"
+txt = open(conf).read()
+def has(h):
+    return re.search(r'^\s*#?\s*\[' + re.escape(h) + r'\]', txt, re.M) is not None
+add = ""
+if not has("core"):
+    add += "\n[core]\nInclude = %s\n" % arch_ml
+if not has("extra"):
+    add += "\n[extra]\nInclude = %s\n" % arch_ml
+if add:
+    open(conf, "a").write(add)
+    print("  appended:" + add.strip().replace("\n", " "))
+else:
+    print("  core/extra 段已存在(可能被注释), 跳过追加")
+PYEOF
+
+        # 3b) 自愈: 把已有 core/extra 段里指向 SteamOS mirrorlist 的 Include 改对。
+        #     对老脚本留下的错配置能一次性修好 404; 对已正确的配置是幂等操作。
+        sub "校正 core/extra 的 Include → mirrorlist-arch..."
+        python3 - <<PYEOF
+import re
+p = "/etc/pacman.conf"
+lines = open(p).read().split("\n")
+cur = None; hit = 0; out = []
+for l in lines:
+    m = re.match(r'^\s*#?\s*\[([^\]]+)\]', l)
+    if m:
+        cur = m.group(1)
+    if cur in ("core", "extra") and re.match(r'^\s*Include\s*=', l) and "mirrorlist-arch" not in l:
+        l = l.replace("/etc/pacman.d/mirrorlist", "/etc/pacman.d/mirrorlist-arch")
+        hit += 1
+    out.append(l)
+open(p, "w").write("\n".join(out))
+print("  修正 Include 行数: %d" % hit)
+PYEOF
+
+        # 重新评估
+        grep -qE '^\s*#?\s*\[core\]'  /etc/pacman.conf && HAS_CORE=1
+        grep -qE '^\s*#?\s*\[extra\]' /etc/pacman.conf && HAS_EXTRA=1
+        info "core/extra 就绪(均指向 mirrorlist-arch)"
+    fi
+
+    # 3c) 快照源(SteamOS 3.9)与滚动源并存的"混源"纪律:
+    #     pacman.conf 里靠前命中的仓库优先。真机已验证的安全结构是
+    #     【快照源 core-3.9/extra-3.9 在前, 滚动 core/extra 在后兜底】——
+    #     这样 electron/libisl 等同名包都命中快照源(版本与系统匹配), 滚动源
+    #     只补快照里没有的新包。若快照源缺失或滚动源排到前面, 会混装 ABI。
+    #     此处只检查并给出修复指引, 不自动重排(乱序通常意味着用户手动改过)。
+    if [ "$IS_STEAMOS" -eq 1 ]; then
+        local snap_pos roll_core_pos
+        # 只数"激活"的段(行首无 #)。被注释的快照源不算存在 —— 否则会误判 electron 命中快照。
+        snap_pos="$(awk '/^[[:space:]]*\[(extra|core)-3\.9\]/{print NR; exit}' /etc/pacman.conf)"
+        roll_core_pos="$(awk '/^[[:space:]]*\[core\]/{print NR; exit}' /etc/pacman.conf)"
+        if [ -z "$snap_pos" ]; then
+            warn "未找到(激活的)快照源 extra-3.9/core-3.9 —— electron 等会从滚动 extra 拉, 版本可能不匹配系统。"
+            warn "检查: SteamOS 重装后自带这些段, 若被注释需取消注释(位置应在滚动 core/extra 之前)。"
+        elif [ -n "$roll_core_pos" ] && [ "$roll_core_pos" -lt "$snap_pos" ]; then
+            warn "激活的滚动 [core]($roll_core_pos 行)排在快照源($snap_pos 行)之前 —— 同名包会优先命中滚动源, 有混源 ABI 风险。"
+            warn "建议: 把末尾激活的滚动 [core]/[extra] 移到快照源(extra-3.9)之后, 保持快照优先。"
+        else
+            info "源顺序正确: 激活快照源在前(第$snap_pos 行), 滚动源兜底 —— electron 会命中快照源, 版本匹配。"
+        fi
+    fi
+
+    # 4) 刷新
+    sub "刷新仓库(pacman -Sy)..."
+    if ! pacman -Sy --noconfirm >/dev/null 2>&1; then
+        warn "pacman -Sy 刷新失败 —— 多半还是源的问题, 关键错误如下:"
+        pacman -Sy 2>&1 | grep -iE "错误|error|404|failed" | head -6 | sed 's/^/    /'
+        warn "排查: ① cat $MIRROR_ARCH ② grep -A2 '^\\[core\\]' /etc/pacman.conf ③ 网络/代理"
+        warn "各步会重试; 若持续 404, 确认 core/extra 的 Include 已指向 mirrorlist-arch"
+    else
+        info "仓库已同步"
+    fi
+    info "环境准备完成"
+}
+
+# ===========================================================================
+#  [1] archlinuxcn 源
+# ===========================================================================
+setup_cn() {
+    step "[1/7] archlinuxcn 软件源"
+    prepare "$@"
+    # 确保官方源存在(archlinuxcn 依赖它)
+    if [ "$HAS_CORE" -eq 0 ] || [ "$HAS_EXTRA" -eq 0 ]; then
+        warn "缺少 Arch 官方仓库, 先运行环境准备补源"
+    fi
+    if [ "$HAS_ARCHLINUXCN" -eq 1 ]; then
+        info "archlinuxcn 源已配置"
+    else
+        printf '\n[archlinuxcn]\nServer = https://repo.archlinuxcn.org/$arch\nServer = https://mirrors.tuna.tsinghua.edu.cn/archlinuxcn/$arch\nServer = https://mirrors.ustc.edu.cn/archlinuxcn/$arch\n' >> /etc/pacman.conf
+        HAS_ARCHLINUXCN=1
+        info "已追加 archlinuxcn 源"
+    fi
+    if ! pacman -Qq archlinuxcn-keyring >/dev/null 2>&1; then
+        sub "安装 archlinuxcn-keyring..."
+        pacman -Sy --noconfirm --needed archlinuxcn-keyring >/dev/null 2>&1 \
+            || warn "archlinuxcn-keyring 安装失败(稍后重跑本步或检查源)"
+    fi
+    pacman -Qq archlinuxcn-keyring >/dev/null 2>&1 && info "archlinuxcn-keyring 就绪" ||
+        warn "archlinuxcn-keyring 未能确认(可能影响后续 AUR/装包)"
+    pacman -Sl archlinuxcn >/dev/null 2>&1 && info "archlinuxcn 仓库可查" || warn "archlinuxcn 仓库同步异常"
+}
+
+# ===========================================================================
+#  [2] IBus —— SteamOS 原生输入法(Wayland 原生前端)
+#
+#  SteamOS(holo) 自带 ibus, 且 kwinrc 的 [Wayland] InputMethod 默认就指向
+#  IBus 的 Wayland 面板 —— 所以直接用原生方案, 不再装 fcitx5。
+#
+#  三个关键点(与旧的 fcitx5 方案相反, 别再照抄老教程):
+#   1) 不设 GTK_IM_MODULE / QT_IM_MODULE —— 让 GTK/Qt 走 Wayland 原生
+#      text-input 前端。设了反而会触发"应使用 Wayland 输入法前端"的警告,
+#      并导致 Wayland 下候选框闪烁。
+#   2) 只设 XMODIFIERS=@im=ibus —— 供 XWayland 应用(Steam 客户端等)走 XIM。
+#   3) 屏蔽系统级 /etc/xdg/autostart/ibus.desktop。它会用
+#      "ibus-daemon --panel=/usr/lib/kimpanel-ibus-panel" 独立拉起 daemon,
+#      破坏"ibus-daemon 必须是 ibus-ui-gtk3 的子进程"这一要求并触发警告。
+#      正确链路: KWin → IBus Wayland 面板 → ibus-ui-gtk3 → ibus-daemon。
+#
+#  中文引擎由环境变量 IBUS_ENGINE 选择(默认 libpinyin):
+#    libpinyin → ibus-libpinyin (extra 官方源, 支持小鹤双拼)
+#    rime      → ibus-rime      (archlinuxcn/AUR, 与 fcitx5-rime 词库通用)
+#    pinyin    → ibus-pinyin    (SteamOS 自带, 最省事)
+# ===========================================================================
+setup_im() {
+    step "[2/7] IBus 原生输入法 + 中文引擎"
+    prepare "$@"
+
+    local ENVD_DIR="$REAL_HOME/.config/environment.d"
+    local AUTOSTART_DIR="$REAL_HOME/.config/autostart"
+    local FISH_CONF="$REAL_HOME/.config/fish/conf.d"
+    local IBUS_PANEL="/usr/share/applications/org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop"
+    local IBUS_ENGINE="${IBUS_ENGINE:-libpinyin}"
+    local ENGINE_NAME=""
+
+    mkdir -p "$ENVD_DIR" "$AUTOSTART_DIR" "$FISH_CONF"
+
+    # 从已安装的引擎组件里解析真实 engine name(避免写死)
+    pick_zh_engine() {
+        local want f
+        for want in "$@"; do
+            for f in /usr/share/ibus/component/*.xml; do
+                grep -q "<name>$want</name>" "$f" 2>/dev/null && { echo "$want"; return 0; }
+            done
+        done
+        echo ""
+    }
+
+    # ---- 0) 清理旧 fcitx5 残留(改方案后必须清, 否则两套打架) ----
+    sub "清理 fcitx5 残留配置..."
+    rm -f "$ENVD_DIR/fcitx5.conf" "$FISH_CONF/fcitx5.fish" 2>/dev/null
+    if [ -f /etc/xdg/autostart/org.fcitx.Fcitx5.desktop ] ||
+       [ -f /usr/share/applications/org.fcitx.Fcitx5.desktop ]; then
+        cat > "$AUTOSTART_DIR/org.fcitx.Fcitx5.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Fcitx 5 (disabled)
+Hidden=true
+EOF
+        info "已屏蔽 fcitx5 自启动"
+    fi
+    pacman -Qq fcitx5 >/dev/null 2>&1 &&
+        warn "检测到已装 fcitx5(本脚本不再安装)。如需清理: sudo pacman -Rns fcitx5 fcitx5-rime" || true
+
+    # ---- 1) 确保 ibus 与中文引擎 ----
+    sub "检查 ibus(SteamOS 自带)..."
+    pacman -S --noconfirm --needed ibus 2>&1 | tail -2 || warn "ibus 安装异常(通常已自带)"
+
+    case "$IBUS_ENGINE" in
+        rime)
+            sub "安装 ibus-rime(需 archlinuxcn)..."
+            pacman -S --noconfirm --needed ibus-rime 2>&1 | tail -3 \
+                || warn "ibus-rime 装不上: 先跑第[1]步配 archlinuxcn, 或改用 IBUS_ENGINE=libpinyin"
+            ;;
+        pinyin)
+            pacman -S --noconfirm --needed ibus-pinyin 2>&1 | tail -2 || warn "ibus-pinyin 安装失败"
+            ;;
+        *)
+            sub "安装 ibus-libpinyin(官方 extra, 支持小鹤双拼)..."
+            pacman -S --noconfirm --needed ibus-libpinyin 2>&1 | tail -3 \
+                || warn "ibus-libpinyin 装不上(确认 extra 源), 回退 ibus-pinyin"
+            pacman -Qq ibus-libpinyin >/dev/null 2>&1 || \
+                pacman -S --noconfirm --needed ibus-pinyin 2>&1 | tail -2 || true
+            ;;
+    esac
+
+    ENGINE_NAME="$(pick_zh_engine libpinyin rime pinyin bopomofo)"
+    if [ -n "$ENGINE_NAME" ]; then
+        info "中文引擎: $ENGINE_NAME"
+    else
+        warn "未找到中文引擎组件(装包可能失败)。可手动: ibus-setup → 输入法 → 添加中文"
+    fi
+
+    # ---- 2) 环境变量: 只留 XMODIFIERS, 绝不设 GTK/QT_IM_MODULE ----
+    sub "写入输入法环境变量(仅 XMODIFIERS, 走 Wayland 原生前端)..."
+    cat > "$ENVD_DIR/ibus.conf" <<'EOF'
+# Wayland 原生前端: 不要设 GTK_IM_MODULE / QT_IM_MODULE
+# XMODIFIERS 供 XWayland(Steam 客户端等)走 XIM
+XMODIFIERS=@im=ibus
+EOF
+    cat > "$FISH_CONF/ibus.fish" <<'EOF'
+# Wayland 原生前端: 不要设 GTK_IM_MODULE / QT_IM_MODULE
+set -gx XMODIFIERS @im=ibus
+EOF
+    info "已写 $ENVD_DIR/ibus.conf"
+
+    # ---- 3) 屏蔽系统级独立自启动, 让 ibus-ui-gtk3 托管 daemon ----
+    if [ -f /etc/xdg/autostart/ibus.desktop ]; then
+        sub "屏蔽 /etc/xdg/autostart/ibus.desktop(它独立拉起 daemon 会触发警告)..."
+        cat > "$AUTOSTART_DIR/ibus.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=IBus (disabled - started by ibus-ui-gtk3)
+Hidden=true
+EOF
+        info "已屏蔽, 改为由 KWin → ibus-ui-gtk3 拉起"
+    fi
+
+    # ---- 4) KWin Wayland 输入法 = IBus Wayland 面板(唯一入口) ----
+    local KW=""
+    command -v kwriteconfig6 >/dev/null 2>&1 && KW=kwriteconfig6
+    [ -z "$KW" ] && command -v kwriteconfig5 >/dev/null 2>&1 && KW=kwriteconfig5
+    if [ -f "$IBUS_PANEL" ] && [ -n "$KW" ]; then
+        sudo -u "$REAL_USER" "$KW" --file kwinrc --group Wayland --key InputMethod "$IBUS_PANEL" \
+            && info "KWin InputMethod=IBus Wayland 面板" \
+            || warn "写 kwinrc 失败, 请登录后: 系统设置→键盘→虚拟键盘→选 IBus"
+    else
+        warn "无 kwriteconfig 或缺少 $IBUS_PANEL, 请手动: 系统设置→键盘→虚拟键盘→IBus"
+    fi
+
+    # ---- 5) 预置引擎(需桌面会话的 D-Bus, 失败属正常) ----
+    if [ -n "$ENGINE_NAME" ] && command -v dconf >/dev/null 2>&1; then
+        sudo -u "$REAL_USER" dconf write /desktop/ibus/general/preload-engines "['$ENGINE_NAME']" \
+            2>/dev/null && info "已预置引擎 $ENGINE_NAME" \
+            || warn "dconf 需桌面会话; 登录后执行: dconf write /desktop/ibus/general/preload-engines \"['$ENGINE_NAME']\""
+    fi
+
+    chown -R "$REAL_USER:$REAL_GROUP" "$ENVD_DIR" "$AUTOSTART_DIR" "$FISH_CONF" 2>/dev/null || true
+    info "IBus 原生输入法配置完成"
+    cat <<'EOF'
+  注销重登(或重启)后生效。验证:
+    echo "[$GTK_IM_MODULE][$QT_IM_MODULE]"          两个都应为空
+    pgrep -a ibus-ui-gtk3 ; pgrep -a ibus-daemon    后者的 PPID 应是前者
+  切输入法: Super+Space(或 ibus-setup 里改); 增删引擎: ibus-setup
+  只跑 X11 的老应用(WPS/Anki 等)若不能输入: 单独给它 QT_IM_MODULE=ibus, 不要全局设
+  游戏模式要中文: systemctl --user enable --now ibus-gamescope.service
+EOF
+}
+
+
+# ===========================================================================
+#  rootfs 体检 / 瘦身
+#
+#  两个已实测确认、且与老结论相反的事实:
+#   ① /opt 在 SteamOS 上是 bind mount 到 /home 分区:
+#        findmnt /opt → /dev/nvme0n1p8[/.steamos/offload/opt]
+#      所以 /opt 下的体积(WorkBuddy 818M)完全不占 rootfs。别再 mv /opt
+#      (它是挂载点, 会报"设备或资源忙"), 也别按"818M 占 rootfs"做预检。
+#   ② rootfs 5GB 是 btrfs, 常见 "Device unallocated ≈ 0" —— chunk 全部分配完,
+#      剩余空间只是 chunk 内部余量; 写满不会提示空间不足, 而是直接 ENOSPC
+#      (可能损坏文件系统)。所以必须留缓冲, 不能踩红线装东西。
+# ===========================================================================
+OPT_OFFLOAD=0
+rootfs_report() {
+    local avail_kb opt_src root_src
+    avail_kb="$(df -Pk / | awk 'NR==2{print $4}')"
+    opt_src="$(findmnt -no SOURCE --target /opt 2>/dev/null)"
+    root_src="$(findmnt -no SOURCE / 2>/dev/null)"
+    printf "  rootfs 可用: %sMB (设备 %s)\n" "$((avail_kb/1024))" "$root_src"
+    if [ -n "$opt_src" ] && [ "$opt_src" != "$root_src" ]; then
+        info "/opt 独立挂载($opt_src) → /opt 下的体积不计入 rootfs"
+        OPT_OFFLOAD=1
+    else
+        warn "/opt 与 / 同一文件系统 → /opt 下的体积会占 rootfs"
+        OPT_OFFLOAD=0
+    fi
+    if [ "$(stat -fc %T / 2>/dev/null)" = "btrfs" ] && command -v btrfs >/dev/null 2>&1; then
+        local bu
+        bu="$(btrfs filesystem usage / 2>/dev/null | grep -E 'Device unallocated|Free \(estimated\)' | tr -s ' ' | sed 's/^ */    /')"
+        [ -n "$bu" ] && echo "$bu"
+        warn "btrfs 若 Device unallocated 接近 0, 写满会直接 ENOSPC(而非空间不足提示)"
+    fi
+}
+
+clean_rootfs() {
+    step "[8] rootfs 瘦身"
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "需要管理员权限(密码在终端输入), 重新以 sudo 运行..."
+        exec sudo -E bash "$0" clean
+    fi
+    local before after
+    before="$(df -Pk / | awk 'NR==2{print $4}')"
+    rootfs_report
+
+    # ① locale —— 最安全, 本机实测回收约 250M
+    sub "清理 /usr/share/locale(仅保留 zh_CN/zh_TW/en_US/en_GB)..."
+    if [ -d /usr/share/locale ]; then
+        find /usr/share/locale -mindepth 1 -maxdepth 1 \
+             ! -name 'zh_CN' ! -name 'zh_TW' ! -name 'en_US' ! -name 'en_GB' \
+             ! -name 'locale.alias' -exec rm -rf {} + 2>/dev/null
+        info "locale 剩余: $(du -sh /usr/share/locale 2>/dev/null | cut -f1)"
+    fi
+
+    # ② man / doc —— 安全, 几十 M
+    sub "清理 /usr/share/man 与 /usr/share/doc..."
+    rm -rf /usr/share/man/* /usr/share/doc/* 2>/dev/null
+    info "man=$(du -sh /usr/share/man 2>/dev/null | cut -f1) doc=$(du -sh /usr/share/doc 2>/dev/null | cut -f1)"
+
+    # ③ pacman 缓存
+    sub "清理 pacman 缓存..."
+    pacman -Scc --noconfirm >/dev/null 2>&1 && info "缓存已清" || warn "清缓存失败(可忽略)"
+
+    after="$(df -Pk / | awk 'NR==2{print $4}')"
+    info "回收约 $(( (after - before) / 1024 ))MB, 当前可用 $((after/1024))MB"
+
+    echo
+    sub "其他可回收项(脚本不自动删, 自行判断):"
+    for d in /usr/share/fonts /usr/share/icons /usr/lib/modules /usr/lib/firmware; do
+        [ -d "$d" ] && printf "    %-8s %s\n" "$(du -sh "$d" 2>/dev/null | cut -f1)" "$d"
+    done
+    echo "    ⚠️ 绝不能动: /usr/lib/firmware(硬件要) /usr/lib32(Proton 依赖) /usr/lib/steam(Steam 本体)"
+    local kcount
+    kcount="$(ls -1 /usr/lib/modules 2>/dev/null | wc -l)"
+    if [ "$kcount" -gt 1 ]; then
+        warn "存在 $kcount 个内核(每个 100~200M):"
+        du -sh /usr/lib/modules/* 2>/dev/null | sed 's/^/    /'
+        warn "删旧内核请用 pacman -R(手动 rm 会让 pacman 数据库错乱)"
+    fi
+}
+
+# ===========================================================================
+#  [3] WorkBuddy (AUR 包)  — 最可靠能打中文的方案(用户选定)
+#  AUR workbuddy 已处理好 asar/原生模块; 依赖系统 electron(装 /usr, extra 源)。
+#  ⚠️ 中文输入真正根因是 KWin 未配 InputMethod(见 [2] setup_im 的 kwinrc 修复),
+#     所有 Wayland 应用(含 WorkBuddy)都靠它。此处对 wrapper 加 wayland-ime 参数
+#     仅是让 Electron 走原生 Wayland 的无害加固(非必需), 与 setup_im 配合使用。
+# ===========================================================================
+setup_wb() {
+    step "[3/7] WorkBuddy (AUR 包, 最可靠能打中文)"
+    prepare "$@"
+
+    # ── rootfs 空间预检 ──
+    # 只算真正落 /usr 的部分: 编译最小集(约 229M) + electron 依赖(约 349M) ≈ 580M,
+    # 再留 200M 缓冲 → 目标约 768M。/opt 若已 offload 到 /home 分区则不计入。
+    sub "预检 rootfs 空间..."
+    rootfs_report
+    local avail_kb need_kb
+    avail_kb="$(df -Pk / | awk 'NR==2{print $4}')"
+    if [ "${OPT_OFFLOAD:-0}" -eq 1 ]; then
+        need_kb=786432          # 768MB: 编译最小集 + electron + 缓冲(/opt 已 offload)
+    else
+        need_kb=2097152         # 2GB: 还要再吃 WorkBuddy 818M(/opt 未 offload)
+    fi
+    if [ -n "$avail_kb" ] && [ "$avail_kb" -lt "$need_kb" ]; then
+        warn "rootfs 可用 $((avail_kb/1024))MB < 需要 $((need_kb/1024))MB"
+        if [ "${ROOTFS_NOCLEAN:-0}" -ne 1 ]; then
+            warn "先自动瘦身(只清 locale/man/doc/pacman 缓存 等安全项)..."
+            clean_rootfs
+            avail_kb="$(df -Pk / | awk 'NR==2{print $4}')"
+        fi
+        if [ -n "$avail_kb" ] && [ "$avail_kb" -lt "$need_kb" ]; then
+            err "瘦身仍不够(现 $((avail_kb/1024))MB / 需要 $((need_kb/1024))MB)"
+            warn "可选: ① pacman -R 删旧内核(每个 100~200M) ② 清理 /usr/share/fonts、icons"
+            warn "      ③ 放弃 AUR 版, 改用 Flatpak/AppImage 把 WorkBuddy 装进 /home"
+            if [ "${FORCE_WB:-0}" -eq 1 ]; then
+                warn "FORCE_WB=1 已设置, 强行继续(btrfs 无未分配空间时有 ENOSPC 风险)"
+            else
+                exit 1
+            fi
+        fi
+    fi
+    info "rootfs 空间检查通过"
+
+    # ── makepkg 构建目录挪到 /home(/tmp 是 tmpfs, 800MB deb 解包会吃内存) ──
+    local MKCONF="/etc/makepkg.conf" BUILDDIR="$REAL_HOME/.cache/makepkg"
+    if [ -f "$MKCONF" ] && ! grep -qE '^\s*BUILDDIR=' "$MKCONF"; then
+        sub "设置 makepkg BUILDDIR=$BUILDDIR ..."
+        printf '\n# 由 steamos-setup.sh 添加: /tmp 是 tmpfs, 大包构建放 /home\nBUILDDIR="%s"\n' "$BUILDDIR" >> "$MKCONF"
+        mkdir -p "$BUILDDIR"
+        chown -R "$REAL_USER:$REAL_GROUP" "$BUILDDIR" 2>/dev/null || true
+        info "已设置(避免 makepkg 在 tmpfs /tmp 里解 800MB 包)"
+    fi
+
+    # ── 需编译工具链(AUR 需要) + git + AUR helper ──
+    # ⚠️ base-devel 是"包组": pacman -Q base-devel 会把它展开为已装成员,
+    #    只要装了下述最小集(gcc/make/binutils/…), 判断就判为"已装"从而跳过整组。
+    #    整组约 600M, 最小集仅约 229M —— SteamOS 5GB rootfs 上差这 370M 很关键。
+    #    WorkBuddy 的 AUR 本质只是解包 deb, 不需要 autoconf/automake/bison 等重家伙。
+    local BD_MIN="make gcc binutils pkgconf fakeroot debugedit"
+    if ! pacman -Qq base-devel >/dev/null 2>&1; then
+        sub "安装编译工具链(最小集, 约 229M; 比整组 base-devel 省约 370M)..."
+        # --noconfirm --needed 不交互; 大 gcc 用 --noprogressbar 避免刷屏
+        pacman -S --noconfirm --needed --asdeps $BD_MIN git 2>&1 | tail -4 || {
+            err "编译工具链安装失败"
+            warn "若报找不到包, 请先确认快照源(extra-3.9)存在, 再跑环境准备补 core/extra。"
+            warn "手工最小集: sudo pacman -S --needed --asdeps make gcc binutils pkgconf fakeroot debugedit"
+            exit 1
+        }
+        # 装后复核: 最小集能让 pacman -Q base-devel 判为已装(组查询展开)
+        pacman -Qq base-devel >/dev/null 2>&1 && info "工具链就绪(base-devel 组判定通过)" \
+            || warn "最小集未让 base-devel 判定通过——手工补装后重跑本步"
+    else
+        info "编译工具链已就绪(base-devel 判定通过)"
+    fi
+    info "git: $(pacman -Qq git 2>/dev/null || echo 缺)"
+    # 确认依赖 electron/asar 在仓库可及(asar 是 makedepends, electron 是 depends)
+    # ⚠️ electron 是"元包"(Meta package, 体积显示 0.00K), 真实体积在其依赖的
+    #    具体 electronX 版本包。下面用 pacman -S --print-format 估算整棵依赖的真实
+    #    落盘体积(不含已装部分, -u 只算未装), 供空间预检参考。
+    if pacman -Si electron >/dev/null 2>&1; then
+        info "electron: 仓库可见(应来自 extra-3.9 快照源, 与系统版本匹配)"
+    else
+        warn "electron 未在仓库找到——确认已配快照源 extra-3.9(重跑环境准备)"
+    fi
+    pacman -Si asar >/dev/null 2>&1 && info "asar: 仓库可见(extra, 构建所需)" \
+        || warn "asar(makedepends) 未在仓库找到——确认已配 extra 源"
+    # 真实落盘体积估算(仅信息性; 已装则无需再算)
+    if ! pacman -Q electron >/dev/null 2>&1; then
+        local real_mb
+        real_mb="$({ pacman -S --print-format '%s %n' electron 2>/dev/null || pacman -S --noconfirm -p --print-format '%s %n' electron 2>/dev/null; } \
+                    | awk '{s+=$1} END{printf "%.0f", s/1024/1024}')"
+        [ -n "$real_mb" ] && [ "$real_mb" -gt 0 ] && info "electron 真实落盘约 ${real_mb}MB(元包本身仅 0.00K, 体积在依赖的具体版本包)" \
+            || warn "无法估算 electron 真实体积(仓库未同步或格式不同), 空间按保守 349M 计"
+    fi
+    # AUR helper(yay 优先): 官方源无 yay, 需 archlinuxcn 或 AUR 构建
+    local AURHELP=""
+    command -v yay >/dev/null 2>&1 && AURHELP=yay
+    if [ -z "$AURHELP" ]; then
+        command -v paru >/dev/null 2>&1 && AURHELP=paru
+    fi
+    if [ -z "$AURHELP" ]; then
+        # 尝试 archlinuxcn(已由 [1] 配置); yay 在其内
+        sub "尝试从 archlinuxcn 安装 yay..."
+        if grep -qE '^\s*\[archlinuxcn\]' /etc/pacman.conf 2>/dev/null; then
+            pacman -S --noconfirm --needed yay 2>&1 | tail -3
+        fi
+        command -v yay >/dev/null 2>&1 && AURHELP=yay
+        if [ -z "$AURHELP" ]; then
+            # 兜底: 从 AUR git 构建(在用户家目录做, 避免 /tmp 权限问题)
+            sub "从 AUR 源码构建 yay(约几分钟)..."
+            local YAYDIR; YAYDIR="$(homedir .cache/yay-aur-build)"
+            rm -rf "$YAYDIR/yay"
+            if runuser -u "$REAL_USER" -- git clone --depth 1 https://aur.archlinux.org/yay.git "$YAYDIR/yay" 2>&1 | tail -2; then
+                ( cd "$YAYDIR/yay" && runuser -u "$REAL_USER" -- makepkg -si --noconfirm --needed 2>&1 | tail -5 )
+            fi
+            command -v yay >/dev/null 2>&1 && AURHELP=yay
+        fi
+        [ -n "$AURHELP" ] || { err "AUR helper 安装失败"; exit 1; }
+    fi
+    info "AUR helper: $AURHELP"
+
+    # 装 workbuddy(AUR)。yay/paru 需以普通用户跑(makepkg 禁 root)。
+    if ! pacman -Qq workbuddy >/dev/null 2>&1; then
+        sub "从 AUR 安装 workbuddy(联网下载约 800MB deb + 解包, 需 10~20 分钟)..."
+        warn "本步下载大且耗时, 请勿中途断开; 失败后重跑本步即可(幂等)。"
+        # 清屏输出保留给用户看(不用 tail 吞掉, 失败也看得到原因)
+        if [ "$AURHELP" = "yay" ]; then
+            runuser -u "$REAL_USER" -- yay -S --noconfirm --needed \
+                --answerclean=N --answerdiff=N --answeredit=N workbuddy 2>&1
+        else
+            runuser -u "$REAL_USER" -- paru -S --noconfirm --needed --skipreview workbuddy 2>&1
+        fi
+        if ! pacman -Qq workbuddy >/dev/null 2>&1; then
+            err "workbuddy 安装失败"
+            warn "常见原因与排查:"
+            warn "  ① 网络无法下载 800MB deb(codebuddy CDN) → 检查网络后重跑本步"
+            warn "  ② base-devel/asar/electron 未装 → 先跑环境准备确认 extra 源"
+            warn "  ③ 磁盘空间不足 → 上一步已预检, 若仍失败查看 df -h /"
+            exit 1
+        fi
+    fi
+    info "WorkBuddy: $(pacman -Q workbuddy 2>/dev/null)"
+
+    # 修复 wrapper 的 Wayland IME 参数(AUR 每次升级会冲掉, 需重写)
+    local WRAPPER="/usr/bin/workbuddy"
+    local MARK="--wayland-text-input-version=3"
+    local FLAGS=("--enable-features=UseOzonePlatform" "--ozone-platform=wayland"
+                 "--enable-wayland-ime" "--wayland-text-input-version=3")
+    if [ -f "$WRAPPER" ]; then
+        sub "确保 workbuddy wrapper 含 Wayland IME 参数..."
+        if [ ! -f "${WRAPPER}.orig.bak" ]; then
+            cp -a "$WRAPPER" "${WRAPPER}.orig.bak" 2>/dev/null || true
+        fi
+        if ! grep -q -- "$MARK" "$WRAPPER"; then
+            if [ -f "${WRAPPER}.orig.bak" ]; then
+                cp -a "${WRAPPER}.orig.bak" "$WRAPPER"
+            else
+                printf '#!/usr/bin/bash\nexec electron /opt/WorkBuddy/app.asar.unpacked "$@"\n' > "$WRAPPER"
+            fi
+            sed -i 's#app\.asar\.unpacked#app.asar.unpacked '"${FLAGS[*]}"'#' "$WRAPPER"
+            chmod 755 "$WRAPPER"
+            info "已写入 Wayland IME 参数"
+        else
+            info "wrapper 已含 text-input-v3, 无需修改"
+        fi
+        bash -n "$WRAPPER" 2>/dev/null && info "wrapper 语法OK" || {
+            warn "wrapper 语法异常, 回滚"
+            [ -f "${WRAPPER}.orig.bak" ] && cp -a "${WRAPPER}.orig.bak" "$WRAPPER"
+        }
+        echo "当前 wrapper: $(cat "$WRAPPER")"
+    else
+        warn "未找到 $WRAPPER(AUR 安装可能异常), 跳过 IME 修复"
+    fi
+
+    cat <<EOF
+  ${C_WARN}完成! 彻底退出 WorkBuddy(pkill -f WorkBuddy)后从应用菜单重开。${C_R}
+  验证: 输入框 Ctrl+Space 能出候选即成功。WorkBuddy 自动更新后若中文失效, 重跑本步。
+  空间账: /opt 已 offload 到 /home 分区, 818M 不占 rootfs; 占 rootfs 的只有
+  electron 依赖(约349M) + 编译最小集(约229M)。不够时本步会自动先跑一次瘦身。
+EOF
+}
+
+# ===========================================================================
+#  [4] GPD Win5 背键
+#  (守护进程 py 放 /home, /etc 只留 systemd unit + udev + inputplumber 配置)
+# ===========================================================================
+setup_backkey() {
+    step "[4/7] GPD Win5 背键"
+    prepare "$@"
+
+    local VENDOR="$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)"
+    echo "$VENDOR" | grep -qi "GPD" || warn "厂商非 GPD($VENDOR), 背键可能不适用"
+
+    # inputplumber(SteamOS 游戏模式自带; 桌面模式若无则需装)
+    if ! systemctl list-unit-files 2>/dev/null | grep -qi inputplumber && \
+       ! command -v inputplumber >/dev/null 2>&1; then
+        sub "尝试安装 inputplumber..."
+        pacman -S --noconfirm --needed inputplumber 2>/dev/null || \
+            warn "inputplumber 装不上(可能在 archlinuxcn)。若 SteamOS 游戏模式已内置可忽略"
+    fi
+
+    # 守护进程脚本放 /home
+    local BK_HOME="$(homedir .local/opt/gpd-win5-backkeys)"
+    local DAEMON_DST="$BK_HOME/gpd-win5-backkeys.py"
+    local UNIT_PATH="/etc/systemd/system/gpd-win5-backkeys.service"
+    local UDEV_RULE="/etc/udev/rules.d/70-gpd-backkeys.rules"
+    local IP_CFG="/etc/inputplumber/devices.d/20-gpd_win5.yaml"
+    local IP_DEFAULT="/usr/share/inputplumber/devices/50-gpd_win5.yaml"
+    local SERVICE="gpd-win5-backkeys"
+
+    sub "写入背键守护进程(到 /home)..."
+    cat > "$DAEMON_DST" <<'PYEOF'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""GPD Win 5 背键守护进程: L4/R4 -> uinput F14/F15 (由 steamos-setup.sh 生成)"""
+import glob, os, struct, sys, time
+TARGET_VID, TARGET_PID = 0x2F24, 0x0137
+REPORT_ID = 0x01
+L4_BYTE, R4_BYTE = 9, 10
+L4_CODE, R4_CODE = 0x69, 0x6A
+KEY_F14, KEY_F15 = 184, 185
+EV_SYN, EV_KEY = 0x00, 0x01
+BUS_BLUETOOTH = 0x05
+UI_SET_EVBIT, UI_SET_KEYBIT = 0x40045564, 0x40045565
+UI_DEV_SETUP, UI_DEV_CREATE = 0x405C5503, 0x5501
+INPUT_EVENT = struct.Struct("llHHi")
+UINPUT_NAME = "GPD Win 5 Back Buttons"
+DEBUG = os.environ.get("GPD_BACKKEYS_DEBUG") == "1"
+
+def log(m): sys.stdout.write(m + "\n"); sys.stdout.flush()
+
+def find_hidraw():
+    for path in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        try:
+            with open(path + "/device/uevent") as f:
+                for line in f:
+                    if not line.startswith("HID_ID="): continue
+                    p = line.strip().split(":")
+                    if len(p) < 3: continue
+                    if int(p[1][-4:] or "0", 16) == TARGET_VID and int(p[2], 16) == TARGET_PID:
+                        return "/dev/" + os.path.basename(path)
+        except OSError: continue
+    return None
+
+def create_uinput():
+    import fcntl
+    fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY); fcntl.ioctl(fd, UI_SET_EVBIT, EV_SYN)
+    fcntl.ioctl(fd, UI_SET_KEYBIT, KEY_F14); fcntl.ioctl(fd, UI_SET_KEYBIT, KEY_F15)
+    s = struct.pack("HHHH", BUS_BLUETOOTH, TARGET_VID, 0x9001, 1)
+    s += UINPUT_NAME.encode().ljust(80, b"\x00") + struct.pack("I", 0)
+    fcntl.ioctl(fd, UI_DEV_SETUP, s); fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+def emit(fd, t, c, v): os.write(fd, INPUT_EVENT.pack(0, 0, t, c, v))
+def press(fd, c): emit(fd, EV_KEY, c, 1); emit(fd, EV_SYN, 0, 0)
+def release(fd, c): emit(fd, EV_KEY, c, 0); emit(fd, EV_SYN, 0, 0)
+
+def main():
+    if "--monitor" in sys.argv:
+        prev = None
+        while True:
+            path = find_hidraw()
+            if not path: log("未找到设备,2s重试"); time.sleep(2); continue
+            log("监听 %s" % path)
+            try: fd = os.open(path, os.O_RDONLY)
+            except OSError: time.sleep(2); continue
+            try:
+                while True:
+                    data = os.read(fd, 128)
+                    if not data: break
+                    if data.hex() != prev:
+                        prev = data.hex(); m = []
+                        if len(data) > L4_BYTE and data[L4_BYTE] == L4_CODE: m.append("L4↓")
+                        if len(data) > R4_BYTE and data[R4_BYTE] == R4_CODE: m.append("R4↓")
+                        log("  " + " ".join("%02x" % b for b in data[:16]) + ("  <- " + " ".join(m) if m else ""))
+            except OSError: pass
+            finally: os.close(fd)
+            time.sleep(1)
+    if os.geteuid() != 0: print("需root", file=sys.stderr); return 1
+    log("GPD Win5 背键守护进程启动")
+    ufd = create_uinput()
+    log("uinput 键盘 %s (F14=L4 F15=R4)" % UINPUT_NAME)
+    l4d = r4d = False; prevr = None
+    while True:
+        path = find_hidraw()
+        if not path: log("未找到设备,2s重试"); time.sleep(2); continue
+        log("监听 %s" % path)
+        try: fd = os.open(path, os.O_RDONLY)
+        except OSError as e: log("打开失败 %s" % e); time.sleep(2); continue
+        try:
+            while True:
+                data = os.read(fd, 128)
+                if not data: log("设备EOF,重发现"); break
+                if DEBUG and data.hex() != prevr:
+                    prevr = data.hex(); log("  report: " + " ".join("%02x" % b for b in data[:24]))
+                if len(data) <= max(L4_BYTE, R4_BYTE) or data[0] != REPORT_ID: continue
+                l4n, r4n = data[L4_BYTE] == L4_CODE, data[R4_BYTE] == R4_CODE
+                if l4n and not l4d: log("L4↓ F14"); press(ufd, KEY_F14)
+                elif not l4n and l4d: log("L4↑"); release(ufd, KEY_F14)
+                l4d = l4n
+                if r4n and not r4d: log("R4↓ F15"); press(ufd, KEY_F15)
+                elif not r4n and r4d: log("R4↑"); release(ufd, KEY_F15)
+                r4d = r4n
+        except OSError as e: log("读取中断 %s" % e)
+        finally: os.close(fd)
+        time.sleep(1)
+
+if __name__ == "__main__": sys.exit(main())
+PYEOF
+    chmod 755 "$DAEMON_DST"
+    chown "$REAL_USER:$REAL_GROUP" "$DAEMON_DST" 2>/dev/null || true
+    info "守护进程: $DAEMON_DST"
+
+    sub "安装 udev 规则(/etc, 小)..."
+    cat > "$UDEV_RULE" <<'EOF'
+SUBSYSTEM=="input", ATTRS{name}=="GPD Win 5 Back Buttons", ENV{ID_BUS}="bluetooth"
+EOF
+    udevadm control --reload 2>/dev/null || true
+
+    sub "安装 systemd 服务(/etc, 小)..."
+    cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=GPD Win 5 back buttons (L4/R4) to uinput translator
+After=multi-user.target
+Before=inputplumber.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 $DAEMON_DST
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable "$SERVICE" >/dev/null 2>&1
+    systemctl restart "$SERVICE" 2>/dev/null
+    info "服务已装(/etc, 仅几百字节)"
+
+    # InputPlumber 覆盖配置
+    if [ -f "$IP_DEFAULT" ]; then
+        sub "生成 InputPlumber 覆盖配置(/etc)..."
+        mkdir -p "$(dirname "$IP_CFG")"
+        python3 - "$IP_DEFAULT" "$IP_CFG" <<'PYEOF'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+extra = ("  - group: keyboard\n    evdev:\n"
+         '      name: "GPD Win 5 Back Buttons"\n'
+         "      handler: event*\n")
+out, ins = [], False
+for line in text.splitlines(keepends=True):
+    if not ins and line.startswith("options:"):
+        out.append("# === 追加: 背键虚拟键盘 ===\n"); out.append(extra); out.append("\n"); ins = True
+    out.append(line)
+if not ins: sys.exit("未找到 options: 插入点")
+open(dst, "w").write("".join(out))
+print("已生成 %s" % dst)
+PYEOF
+        systemctl restart inputplumber 2>/dev/null || warn "inputplumber 未运行(游戏模式才需要)"
+        info "InputPlumber 覆盖配置已生成"
+    else
+        warn "无 InputPlumber 默认配置 $IP_DEFAULT; 若游戏模式已接管背键可忽略"
+    fi
+
+    sleep 2
+    systemctl is-active --quiet "$SERVICE" && info "背键守护进程运行中" ||
+        warn "守护进程未运行: journalctl -u $SERVICE -n 30"
+    grep -qs "GPD Win 5 Back Buttons" /sys/devices/virtual/input/*/name 2>/dev/null &&
+        info "uinput 虚拟键盘已创建" || warn "虚拟键盘未出现(守护进程可能没读到设备)"
+    cat <<EOF
+  测试按 L4/R4。调试: journalctl -u $SERVICE -f  或  python3 $DAEMON_DST --monitor
+  若 InputPlumber 升级后失效: rm -f $IP_CFG && 重跑本步
+EOF
+}
+
+# ===========================================================================
+#  [5] Decky Loader  (二进制在 /home/homebrew, /etc 只留小 unit)
+# ===========================================================================
+setup_decky() {
+    step "[5/7] Decky Loader"
+    prepare "$@"
+
+    local SERVICE_NAME="plugin_loader"
+    local UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+    local HOMEBREW_FOLDER="$REAL_HOME/homebrew"
+
+    for c in curl jq; do command -v "$c" >/dev/null 2>&1 || { err "缺依赖 $c"; exit 1; }; done
+
+    mkdir -p "${HOMEBREW_FOLDER}/services" "${HOMEBREW_FOLDER}/plugins"
+    touch "$REAL_HOME/.steam/steam/.cef-enable-remote-debugging" 2>/dev/null || true
+
+    local NEED_DL=1
+    if [ -x "${HOMEBREW_FOLDER}/services/PluginLoader" ] &&
+       systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        NEED_DL=0
+    fi
+
+    if [ "$NEED_DL" -eq 1 ]; then
+        # 版本查询: 直连 GitHub API 在境内常失败 → 依次试镜像 API
+        sub "查询 Decky 最新版本(GitHub)..."
+        local REL VERSION DLURL
+        REL=""
+        for api in "https://api.github.com" "https://ghfast.top/https://api.github.com" \
+                   "https://gh-proxy.com/https://api.github.com"; do
+            REL="$(curl -fsS --connect-timeout 10 --max-time 30 "$api/repos/SteamDeckHomebrew/decky-loader/releases?per_page=20" 2>/dev/null)" \
+                && [ -n "$REL" ] && break
+        done
+        [ -n "$REL" ] || { err "无法访问 GitHub API(网络/代理), 本步跳过"; warn "重试: sudo bash $SCRIPT_NAME decky"; return 0; }
+        VERSION="$(jq -r 'first(.[] | select(.prerelease|not)) | .tag_name' <<<"$REL")"
+        [ -n "$VERSION" ] && [ "$VERSION" != "null" ] || { err "解析版本失败"; exit 1; }
+        DLURL="$(jq -r --arg v "$VERSION" \
+            'first(.[]|select(.tag_name==$v))|.assets[].browser_download_url|select(endswith("PluginLoader"))' <<<"$REL")"
+        [ -n "$DLURL" ] || { err "未找到 PluginLoader 资产"; exit 1; }
+        info "版本 $VERSION, 开始下载..."
+        local ok=0 u m
+        # 镜像加速: 国内直连 GitHub 常失败 → 依次试直连 + 镜像
+        local -a mirrors=("$DLURL")
+        mirrors+=("https://ghfast.top/$DLURL" "https://gh-proxy.com/$DLURL" "https://ghproxy.net/$DLURL")
+        for u in "${mirrors[@]}"; do
+            for _ in 1 2 3; do
+                sub "尝试: $u"
+                curl -fL --connect-timeout 10 --max-time 500 --retry 2 "$u" \
+                    -o "${HOMEBREW_FOLDER}/services/PluginLoader.part" 2>/dev/null && {
+                        mv -f "${HOMEBREW_FOLDER}/services/PluginLoader.part" \
+                            "${HOMEBREW_FOLDER}/services/PluginLoader"; ok=1; break 2; }
+            done
+        done
+        [ "$ok" -eq 1 ] || { err "下载失败; 可用: sudo USE_MIRROR=1 bash $SCRIPT_NAME decky"; exit 1; }
+        chmod +x "${HOMEBREW_FOLDER}/services/PluginLoader"
+        echo "$VERSION" > "${HOMEBREW_FOLDER}/services/.loader.version"
+        info "PluginLoader 就绪"
+    else
+        info "Decky 已装并运行, 跳过下载(重跑本步=更新)"
+    fi
+
+    sub "安装 systemd 服务(/etc, 小)..."
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    cat > "$UNIT_PATH" <<EOF
+[Unit]
+Description=SteamDeck Plugin Loader
+After=network.target
+[Service]
+Type=simple
+User=root
+Restart=always
+KillMode=process
+TimeoutStopSec=15
+ExecStart=${HOMEBREW_FOLDER}/services/PluginLoader
+WorkingDirectory=${HOMEBREW_FOLDER}/services
+Environment=UNPRIVILEGED_PATH=${HOMEBREW_FOLDER}
+Environment=PRIVILEGED_PATH=${HOMEBREW_FOLDER}
+Environment=LOG_LEVEL=INFO
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    systemctl restart "$SERVICE_NAME"
+    chown -R "$REAL_USER:$REAL_GROUP" "$HOMEBREW_FOLDER" 2>/dev/null || true
+    sleep 2
+    systemctl is-active --quiet "$SERVICE_NAME" && info "plugin_loader 运行中" ||
+        warn "未运行: journalctl -u $SERVICE_NAME -n 30"
+    if pgrep -u "$REAL_USER" -x steam >/dev/null 2>&1 || pgrep -u "$REAL_USER" -f steam.sh >/dev/null 2>&1; then
+        cat <<EOF
+  ${C_WARN}Steam 运行中 —— 必须完全退出重启 Steam, Decky 才会注入。${C_R}
+EOF
+    else
+        info "Steam 未运行, 启动 Steam 后 ... 菜单出现 Decky 图标"
+    fi
+}
+
+# ===========================================================================
+#  [6] 游戏(鸣潮/终末地): GE-Proton + Steam 非Steam启动辅助
+#  - 只自动化【装 GE-Proton】与【探测游戏本体】。
+#  - 游戏需 Steam 内手动「添加非 Steam 游戏」指向对应启动器 exe,
+#    再用下方写好的 python 写入启动选项。本体文件请用户自行备份放回。
+# ===========================================================================
+setup_games() {
+    step "[6/7] 游戏支持(GE-Proton + 鸣潮/终末地)"
+    prepare "$@"
+
+    local REPO="GloriousEggroll/proton-ge-custom"
+    local TOOLS_DIR="$REAL_HOME/.local/share/Steam/compatibilitytools.d"
+    local MIRROR="${MIRROR:-https://gh-proxy.com}"
+    local GH="https://github.com"
+
+    # --- 1) 装 GE-Proton ---
+    local TAG
+    TAG="${GE_PROTON_TAG:-}"
+    if [ -z "$TAG" ]; then
+        sub "查询 GE-Proton 最新版本..."
+        for api in "https://api.github.com" "https://ghfast.top/https://api.github.com" \
+                   "https://gh-proxy.com/https://api.github.com"; do
+            TAG="$(curl -fsS --connect-timeout 10 --max-time 30 \
+                "$api/repos/$REPO/releases/latest" 2>/dev/null | jq -r .tag_name 2>/dev/null)"
+            [ -n "$TAG" ] && [ "$TAG" != "null" ] && break
+        done
+    fi
+    if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+        warn "获取 GE-Proton 版本失败(网络)。可设 GE_PROTON_TAG=GE-Proton10-9 重跑"
+    else
+        mkdir -p "$TOOLS_DIR"
+        if [ -d "$TOOLS_DIR/$TAG" ]; then
+            info "GE-Proton $TAG 已存在"
+        else
+            local TARBALL="${TAG}-x86_64.tar.gz"
+            local TMP; TMP="$(mktemp -d /tmp/gep.XXXXXX)"
+            local ok=0 u
+            # 依次试多个镜像(境内直连 GitHub 常失败)
+            local -a bases=("$MIRROR/$GH/$REPO" "$GH/$REPO" \
+                            "https://ghfast.top/$GH/$REPO" "https://gh-proxy.com/$GH/$REPO" \
+                            "https://ghproxy.net/$GH/$REPO")
+            sub "下载 GE-Proton $TAG (约500M, 多镜像重试)..."
+            for b in "${bases[@]}"; do
+                u="$b/releases/download/$TAG/$TARBALL"
+                sub "  尝试: $u"
+                if curl -fL --connect-timeout 10 --max-time 2400 --retry 2 -C - \
+                    -o "$TMP/$TARBALL" "$u"; then ok=1; break; fi
+            done
+            if [ "$ok" -eq 1 ]; then
+                rm -rf "$TOOLS_DIR/$TAG"
+                tar -xzf "$TMP/$TARBALL" -C "$TOOLS_DIR" 2>/dev/null
+                chmod +x "$TOOLS_DIR/$TAG/proton" 2>/dev/null || true
+                chown -R "$REAL_USER:$REAL_GROUP" "$TOOLS_DIR" 2>/dev/null || true
+                info "GE-Proton $TAG 安装完成"
+            else
+                warn "GE-Proton 下载失败(所有镜像)。可设 GE_PROTON_TAG=... 或换 MIRROR=https://ghfast.top 重跑"
+            fi
+            rm -rf "$TMP"
+        fi
+    fi
+
+    # --- 2) 探测游戏本体 ---
+    echo
+    step "游戏本体检测"
+    local GAME_DIR="${GAME_DIR:-/home/deck/Downloads}"
+    # SteamOS deck 下载目录通常是 ~/Downloads 或 ~/下载
+    if [ -d "$REAL_HOME/下载" ]; then GAME_DIR="$REAL_HOME/下载"; fi
+    for g in "Wuthering Waves" "Hypergryph Launcher"; do
+        if [ -d "$GAME_DIR/$g" ]; then
+            info "检测到: $GAME_DIR/$g"
+        else
+            warn "未找到: $GAME_DIR/$g (请把游戏本体备份放回该目录)"
+        fi
+    done
+
+    # --- 3) 生成启动选项写入器(探测userid, 不硬编码) ---
+    # 依赖 python-vdf(extra, 供 steam-launch-games.py 读写 vdf)
+    if ! python3 -c "import vdf" >/dev/null 2>&1; then
+        sub "安装 python-vdf(写入 Steam 启动选项所需)..."
+        pacman -S --noconfirm --needed python-vdf 2>&1 | tail -2 || warn "python-vdf 装不上(extra 应有)"
+    fi
+    sub "生成 Steam 启动选项写入器..."
+    mkdir -p "$(homedir .local/bin)"
+    local TOOL="$(homedir .local/bin)"
+    cat > "$TOOL/steam-launch-games.py" <<'PYEOF'
+#!/usr/bin/env python3
+"""写入 Steam 非 Steam 游戏(鸣潮/终末地)启动选项。自动探测 userid。
+用法: python3 steam-launch-games.py
+"""
+import sys, os, glob, shutil
+# 找 localconfig
+cands = glob.glob(os.path.expanduser("~/.local/share/Steam/userdata/*/config/localconfig.vdf"))
+cands += glob.glob(os.path.expanduser("~/.steam/steam/userdata/*/config/localconfig.vdf"))
+if not cands:
+    print("未找到 Steam localconfig.vdf, 请先启动一次 Steam"); sys.exit(1)
+LC = cands[0]
+try:
+    import vdf
+except ImportError:
+    print("缺少 python-vdf, 请: sudo pacman -S python-vdf"); sys.exit(1)
+OPT = ('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--disable-gpu --disable-gpu-compositing '
+       '--disable-features=CalculateNativeWinOcclusion" '
+       'PROTON_FSR4_UPGRADE=4.0.0 %command%')
+NAMES = {"鸣潮启动器": None, "鹰角启动器": None, "终末地启动器": None, "Wuthering Waves": None}
+with open(LC) as f:
+    d = vdf.load(f)
+apps = d["UserLocalConfigStore"]["Software"]["Valve"]["Steam"]["apps"]
+changed = []
+for appid, node in apps.items():
+    name = node.get("name", "")
+    if any(k in str(name) for k in ("鸣潮", "鹰角", "终末地", "Wuthering", "Hypergryph")):
+        cur = node.get("LaunchOptions")
+        if cur == OPT:
+            print(f"  {appid} ({name}): 已是目标值")
+        else:
+            node["LaunchOptions"] = OPT; changed.append(f"{appid} ({name})")
+if not changed:
+    print("没有找到要改的游戏快捷方式。请先在 Steam 库 → 添加非Steam游戏 → 指向启动器 exe")
+    sys.exit(0)
+shutil.copy(LC, LC + ".bak")
+with open(LC, "w") as f:
+    vdf.dump(d, f, pretty=True)
+print("已写入启动选项:", ", ".join(changed))
+print("重启 Steam 生效")
+PYEOF
+    chmod +x "$TOOL/steam-launch-games.py"
+    chown "$REAL_USER:$REAL_GROUP" "$TOOL/steam-launch-games.py" 2>/dev/null || true
+
+    cat <<EOF
+  ==================== 游戏设置指引 ====================
+  1. 游戏本体: 从备份恢复到 $GAME_DIR/
+     - 鸣潮  → $GAME_DIR/Wuthering Waves/2.x/Wuthering Waves Game/  (launcher exe)
+     - 终末地→ $GAME_DIR/Hypergryph Launcher/1.x/Launcher.exe
+  2. Steam 大屏幕/桌面 → 库 → 添加非Steam游戏 → 分别指向两个启动器 exe
+  3. 运行:  python3 $TOOL/steam-launch-games.py   (写入 WEBVIEW2/FSR 启动选项)
+  4. 每个游戏: 右键 → 属性 → 兼容性 → 强制使用 GE-Proton $TAG
+  5. 重启 Steam 生效。
+  ${C_WARN}提醒: 需先在 Steam 添加好非Steam游戏, 第3步才找得到 appid 写入。${C_R}
+EOF
+}
+
+# ===========================================================================
+#  [7] DeepSeek Harness(dsh) — WorkBuddy 之外的补充 AI Agent CLI
+#  官方开源 Agent harness, CLI 名 dsh, 走 npm 分发(@deepseek-ai/dsh)。
+#  需 nodejs+npm(extra)。用「固定版本」避免 dev-preview 破坏性变更。
+#  用法: dsh web(浏览器 Web UI, 127.0.0.1:3080) / dsh run "任务"
+# ===========================================================================
+setup_dsh() {
+    step "[7/7] DeepSeek Harness (dsh, 补充 AI CLI)"
+    prepare "$@"
+
+    # 固定到已实测可用的版本(dev-preview 会破坏兼容, 不追 latest)
+    local DSH_VER="${DSH_VER:-0.1.2-rc.1}"
+
+    # 依赖: nodejs + npm(extra 源, prepare 已补 extra)。优先系统 /usr/bin 版
+    local NPM_BIN NODE_BIN
+    if [ -x /usr/bin/npm ]; then NPM_BIN=/usr/bin/npm; NODE_BIN=/usr/bin/node; else
+        command -v npm >/dev/null 2>&1 && NPM_BIN="$(command -v npm)"
+        command -v node >/dev/null 2>&1 && NODE_BIN="$(command -v node)"
+    fi
+    if [ -z "$NPM_BIN" ] || [ -z "$NODE_BIN" ]; then
+        sub "安装 nodejs+npm(extra 源)..."
+        pacman -S --noconfirm --needed nodejs npm 2>&1 | tail -3 || {
+            err "nodejs/npm 安装失败(确认已配 extra 源)"
+            exit 1
+        }
+        NPM_BIN=/usr/bin/npm; NODE_BIN=/usr/bin/node
+    fi
+    info "node: $("$NODE_BIN" --version 2>/dev/null)  npm: $("$NPM_BIN" --version 2>/dev/null)"
+
+    # 已装且版本正确则跳过(以 dsh --version 为准, 比 grep package.json 可靠)
+    local CURRENT=""
+    [ -x /usr/bin/dsh ] && CURRENT="$(/usr/bin/dsh --version 2>/dev/null | head -1)"
+    if [ -n "$CURRENT" ] && [ "$CURRENT" = "$DSH_VER" ]; then
+        info "dsh $DSH_VER 已安装(路径: /usr/bin/dsh)"
+    else
+        [ -n "$CURRENT" ] && sub "已装 dsh $CURRENT, 改为固定版本 $DSH_VER ..." \
+                        || sub "全局安装 dsh $DSH_VER (npm, 纯JS无编译, 约需几分钟)..."
+        # 全局装到系统 /usr(与 pacman 的 nodejs 布局一致 → /usr/bin/dsh)。
+        # 显式 --prefix /usr 避免被 npm 配置/沙箱 prefix 带偏。
+        # 国内镜像: 依次试 npmmirror 淘宝镜像 → 官方 registry.npmjs.org(直连常慢/失败)
+        local okreg=0 reg NPM_LOG
+        NPM_LOG="$(mktemp /tmp/dsh-npm.XXXXXX.log)"
+        local -a REGS=(
+            "${NPM_REGISTRY:-https://registry.npmmirror.com}"
+            "https://registry.npmjs.org"
+        )
+        for reg in "${REGS[@]}"; do
+            sub "  npm 源: $reg"
+            : > "$NPM_LOG"
+            "$NPM_BIN" install -g --prefix /usr --registry="$reg" \
+                "@deepseek-ai/dsh@$DSH_VER" >"$NPM_LOG" 2>&1
+            local rc=$?
+            tail -6 "$NPM_LOG"
+            # --prefix /usr → /usr/bin/dsh。用文件存在判断, 不依赖 PATH 是否刷新
+            if [ "$rc" -eq 0 ] && [ -x /usr/bin/dsh ]; then
+                okreg=1; break
+            fi
+            echo "    ↑ 该源失败(rc=$rc), 尝试下一个..."
+        done
+        rm -f "$NPM_LOG"
+        if [ "$okreg" -ne 1 ]; then
+            err "dsh 安装失败(所有 npm 源)"
+            warn "排查: ①nodejs/npm 已装 ②网络 ③/usr 可写(root)。可设 NPM_REGISTRY=https://xxx 指定源重跑"
+            exit 1
+        fi
+        [ -x /usr/bin/dsh ] || { err "安装后 /usr/bin/dsh 不存在"; exit 1; }
+        CURRENT="$(/usr/bin/dsh --version 2>/dev/null | head -1)"
+        if [ "$CURRENT" != "$DSH_VER" ]; then
+            err "dsh 版本校验不符(期望 $DSH_VER, 得 $CURRENT)"
+            exit 1
+        fi
+        info "dsh $DSH_VER 安装完成"
+    fi
+    info "dsh 位置: /usr/bin/dsh"
+
+    # 状态行也加一条(便于复查), 首次使用配置在 /root 或 $REAL_HOME 由用户 dsh web 设置
+    cat <<EOF
+  ${C_OK}DeepSeek Harness 安装完成!${C_R}
+  两种用法:
+    dsh web          → 启动浏览器 Web UI (http://127.0.0.1:3080), 补充 WorkBuddy 之外用
+    dsh run "任务"    → 命令行一次性任务
+  首次用: dsh web 后进 Settings → Models 填 DeepSeek API key(platform.deepseek.com)。
+  版本固定为 $DSH_VER(dev-preview 会破坏兼容, 需升级时改脚本顶部 DSH_VER 或用)
+    npm install -g @deepseek-ai/dsh@latest
+  ${C_WARN}说明: nodejs+npm+dsh 装 /usr(约几十~百MB)。这是系统级 CLI, 无法避免 rootfs。${C_R}
+EOF
+}
+
+# ===========================================================================
+#  --status
+# ===========================================================================
+show_status() {
+    echo
+    step "组件状态"
+    printf "  用户 : %s (%s)\n" "$REAL_USER" "$REAL_HOME"
+    printf "  系统 : %s\n" "$(grep -E '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2-)"
+    [ "$IS_STEAMOS" -eq 1 ] && echo "  类型 : SteamOS(holo)" || echo "  类型 : Arch系"
+    printf "  rootfs : 可用 %sMB    /opt: %s\n" \
+        "$(( $(df -Pk / | awk 'NR==2{print $4}') / 1024 ))" \
+        "$(findmnt -no SOURCE --target /opt 2>/dev/null || echo '与 / 同分区')"
+    grep -qE '^\s*#?\s*\[core\]' /etc/pacman.conf 2>/dev/null && info "Arch 源 core: 已配" \
+        || warn "Arch 源 core: 未配(重跑任一步会自动补)"
+    if grep -A3 -E '^\s*#?\s*\[core\]' /etc/pacman.conf 2>/dev/null | grep -q 'mirrorlist-arch'; then
+        info "core Include: mirrorlist-arch(正确, 不会 404)"
+    else
+        warn "core Include 未指向 mirrorlist-arch → pacman -Sy 会 404(重跑任一步自动修)"
+    fi
+    grep -qE '^\s*\[archlinuxcn\]' /etc/pacman.conf 2>/dev/null && info "archlinuxcn: 已配" || warn "archlinuxcn: 未配"
+    pacman -Qq ibus >/dev/null 2>&1 && info "IBus: $(pacman -Q ibus 2>/dev/null)" || warn "IBus: 未安装"
+    local KWIM
+    KWIM="$(grep -A1 '^\[Wayland\]' "$REAL_HOME/.config/kwinrc" 2>/dev/null | grep '^InputMethod=' | cut -d= -f2-)"
+    if [ -n "$KWIM" ]; then
+        case "$KWIM" in
+            *IBus*) info "KWin 输入法: $(basename "$KWIM")" ;;
+            *)      warn "KWin 输入法: $KWIM (非 IBus, 建议重跑第[2]步)" ;;
+        esac
+    else
+        warn "KWin 输入法: 未设置(Wayland 应用无法输入)"
+    fi
+    [ -f "$REAL_HOME/.config/environment.d/ibus.conf" ] && info "IBus 环境变量: 已配" || warn "IBus 环境变量: 未配"
+    if grep -qE '^[[:space:]]*(GTK|QT)_IM_MODULE' "$REAL_HOME/.config/environment.d"/*.conf 2>/dev/null; then
+        warn "仍在设置 GTK/QT_IM_MODULE —— 应取消, 改走 Wayland 原生前端"
+    fi
+    pacman -Qq workbuddy >/dev/null 2>&1 && {
+        info "WorkBuddy: $(pacman -Q workbuddy 2>/dev/null)"
+        grep -q -- "--wayland-text-input-version=3" /usr/bin/workbuddy 2>/dev/null && echo "    Wayland IME: 已修复" || warn "    Wayland IME: 未修复"
+    } || warn "WorkBuddy: 未安装"
+    systemctl is-active --quiet gpd-win5-backkeys 2>/dev/null && info "GPD背键: 运行中" || warn "GPD背键: 未运行"
+    systemctl is-active --quiet plugin_loader 2>/dev/null && info "Decky: 运行中" || warn "Decky: 未运行"
+    [ -x /usr/bin/dsh ] && info "dsh: $(/usr/bin/dsh --version 2>/dev/null | head -1)" || warn "dsh: 未安装"
+    echo
+}
+
+# ===========================================================================
+#  参数解析
+# ===========================================================================
+map_step() {
+    case "$1" in
+        1|cn|source) echo setup_cn ;;
+        2|im|ibus|input|pinyin|rime) echo setup_im ;;
+        3|wb|workbuddy) echo setup_wb ;;
+        4|backkey|gpd) echo setup_backkey ;;
+        5|decky) echo setup_decky ;;
+        6|games|game|proton|鸣潮|终末地) echo setup_games ;;
+        7|dsh|harness|deepseek) echo setup_dsh ;;
+        8|clean|rootfs|slim)   echo clean_rootfs ;;
+        *) echo "" ;;
+    esac
+}
+
+FUNCS=()
+for arg in "$@"; do
+    case "$arg" in
+        --status) show_status; exit 0 ;;
+        -h|--help|help) show_help ;;
+        *)
+            fn="$(map_step "$arg")"
+            [ -n "$fn" ] && FUNCS+=("$fn")
+            ;;
+    esac
+done
+[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh)
+
+# 全量时先 prepare 一次(避免每步重复), 单步时由各函数自行 prepare
+if [ $# -eq 0 ]; then
+    prepare
+fi
+
+for fn in "${FUNCS[@]}"; do
+    "$fn" 2>&1 || warn "$fn 未完整成功(修好后重跑对应步)"
+    echo
+done
+echo
+step "全部完成"
+echo "  复查: bash $SCRIPT_NAME --status"
+echo "  分步: bash $SCRIPT_NAME 1 2 3 4 5 6 7"
