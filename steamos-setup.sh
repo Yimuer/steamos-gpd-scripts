@@ -288,7 +288,7 @@ verify_step() {
         # 而没装 GE-Proton 的机器, 若只判 GE-Proton 会每次都误判缺失、白白重下一次。
         setup_games)   ls -d "$REAL_HOME/.local/share/Steam/compatibilitytools.d/"*/ \
                             "$REAL_HOME/.steam/steam/compatibilitytools.d/"*/ >/dev/null 2>&1 ;;
-        setup_dsh)     [ -x /usr/bin/dsh ] ;;
+        setup_dsh)     [ -x "$REAL_HOME/.local/bin/dsh" ] || [ -x /usr/bin/dsh ] ;;   # 新旧布局都认
         # skipped 也要算达标(本机不适用), 否则 --adopt 后重跑会因"未完成"反复装
         setup_tdp)     local _tv; _tv="$(state_get setup_tdp)"
                        case "$_tv" in skipped*) return 0 ;; esac
@@ -2172,47 +2172,23 @@ setup_selfheal() {
     local SUDOERS="/etc/sudoers.d/steamos-self-heal"
 
     # ── 1. 安装自愈脚本(若备份包里没有, 就内嵌生成) ──
-    local SH_SRC
+    local SH_SRC MAIN_ABS
     SH_SRC="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/self-heal-after-upgrade.sh"
+    MAIN_ABS="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/steamos-setup.sh"
     mkdir -p "$SH_DIR"
     if [ -f "$SH_SRC" ]; then
         install -m 755 "$SH_SRC" "$SH_SCRIPT"
         info "自愈脚本: 从 $SH_SRC 安装"
     else
-        # 备份包里没带 → 内嵌一份(自包含, 不依赖外部文件)
-        cat > "$SH_SCRIPT" <<'SHEOF'
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
-MAIN="$SCRIPT_DIR/../../../../Downloads/steamos-reinstall-backup/steamos-setup.sh"
-[ -f "$MAIN" ] || MAIN="/home/deck/Downloads/steamos-reinstall-backup/steamos-setup.sh"
-declare -a CHECKS=(
-    "背键守护单元|/etc/systemd/system/gpd-win5-backkeys.service|file|4"
-    "背键 udev 规则|/etc/udev/rules.d/70-gpd-backkeys.rules|file|4"
-    "inputplumber 覆盖配置|/etc/inputplumber/devices.d/20-gpd_win5.yaml|file|4"
-    "inputplumber 能力表|/etc/inputplumber/capability_maps.d/20-gpd_win5.yaml|file|4"
-    "境内 NTP|/etc/systemd/timesyncd.conf.d/ntp.conf|file|10"
-    "WorkBuddy Wayland IME|/usr/bin/workbuddy|ime|3"
-)
-NEED=()
-for entry in "${CHECKS[@]}"; do
-    IFS='|' read -r desc path how step <<< "$entry"
-    m=0
-    if [ "$how" = "file" ]; then [ -e "$path" ] || m=1
-    else [ -f "$path" ] && grep -q -- "--enable-wayland-ime" "$path" 2>/dev/null || m=1; fi
-    [ "$m" -eq 1 ] && NEED+=("$step")
-done
-[ "${#NEED[@]}" -eq 0 ] && exit 0
-mapfile -t STEPS < <(printf '%s\n' "${NEED[@]}" | sort -u)
-[ -f "$MAIN" ] || exit 1
-for s in "${STEPS[@]}"; do
-    sudo -n bash "$MAIN" "$s" >/dev/null 2>&1
-done
-exit 0
-SHEOF
-        chmod 755 "$SH_SCRIPT"
-        info "自愈脚本: 内嵌生成(备份包未带 self-heal-after-upgrade.sh)"
+        err "备份包缺少 self-heal-after-upgrade.sh —— 自愈逻辑必须与主脚本同源,"
+        err "不再内嵌副本(曾因双份漂移难维护)。请从 git 仓库恢复该文件后重跑本步。"
+        return 1
     fi
     chown "$REAL_USER:$REAL_GROUP" "$SH_SCRIPT" 2>/dev/null || true
+
+    # ── 1b. main.conf: 固化主脚本路径(自愈脚本部署目录里没有主脚本, 必须指路) ──
+    printf 'MAIN="%s"\n' "$MAIN_ABS" > "$SH_DIR/main.conf"
+    chown "$REAL_USER:$REAL_GROUP" "$SH_DIR/main.conf" 2>/dev/null || true
 
     # ── 2. 写 user 服务单元 ──
     mkdir -p "$(dirname "$USER_UNIT")"
@@ -2231,14 +2207,16 @@ WantedBy=default.target
 EOF
     chown "$REAL_USER:$REAL_GROUP" "$USER_UNIT" 2>/dev/null || true
 
-    # ── 3. sudoers 免密(仅放行自愈脚本一条命令, 最小权限) ──
-    if [ -f "$SUDOERS" ] && grep -q "steamos-self-heal" "$SUDOERS" 2>/dev/null; then
-        info "sudoers 免密已配置"
+    # ── 3. sudoers 免密(放行自愈脚本 + 主脚本, 仅用于重建被升级冲掉的配置) ──
+    if [ -f "$SUDOERS" ] && grep -q "steamos-setup.sh" "$SUDOERS" 2>/dev/null; then
+        info "sudoers 免密已配置(含主脚本调用)"
     else
         mkdir -p /etc/sudoers.d
         cat > "$SUDOERS" <<EOF
-# SteamOS 自愈服务: 允许 deck 免密执行自愈脚本(该脚本只会调 steamos-setup.sh 重建配置)
+# SteamOS 自愈服务: 免密执行自愈脚本与主脚本(仅用于重建被升级冲掉的配置)
 $REAL_USER ALL=(ALL) NOPASSWD: $SH_SCRIPT
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $MAIN_ABS
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $MAIN_ABS *
 EOF
         chmod 440 "$SUDOERS"
         # 校验 sudoers 语法, 语法错会锁死 sudo, 必须拦住
@@ -2266,15 +2244,17 @@ EOF
     cat <<EOF
 
   ${C_OK}自愈服务部署完成。${C_R}
-  下次 SteamOS 系统升级后开机, 会自动检测并重建被冲掉的:
-    · 背键 systemd 单元 + udev 规则 + inputplumber 覆盖配置/能力表
-    · 境内 NTP drop-in
-    · WorkBuddy wrapper 的 Wayland IME 参数
+  版本钩子(每次开机自动执行):
+    · 对比系统版本号, 检测到原子更新(如 3.8→3.9)即清点被冲掉的内容
+    · 报告落盘: ~/.local/opt/steamos-self-heal/last-report.txt (+桌面通知)
+    · sudoers 幸存时全自动恢复(主脚本 --after-upgrade, 完好的自动跳过)
+    · sudoers 也被冲掉时, 通知你一条手动命令(输一次密码即可)
+  清点范围: 背键单元/udev/inputplumber 配置/Decky 系统单元/NTP/WorkBuddy IME
   手动触发一次试试:  su - $REAL_USER -c "systemctl --user start steamos-self-heal.service"
   查看日志:          journalctl --user -u steamos-self-heal.service
 
-  注意: sudoers 免密文件在 /etc, 若系统升级把它冲掉, 自愈会降级为"下次再试";
-        彻底恢复需重跑本步( sudo bash $SCRIPT_NAME 12 )。
+  注意: sudoers 免密文件在 /etc, 升级必被冲 → 大版本升级后的首次恢复仍需
+        手动跑一次( sudo bash $SCRIPT_NAME --after-upgrade ), 之后可全自动。
 EOF
 }
 

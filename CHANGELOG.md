@@ -6,6 +6,26 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [1.1.0] - 2026-09-24
+
+### 新增: SteamOS 升级自愈钩子 v2
+- self-heal-after-upgrade.sh 重写: 每次开机对比系统版本号, 检测到原子更新
+  (rootfs 被整块替换)后自动清点被冲掉的内容, 报告落盘
+  (~/.local/opt/steamos-self-heal/last-report.txt) 并弹桌面通知
+- sudoers 幸存时全自动恢复(主脚本 --after-upgrade, 落地复核只补缺失项);
+  sudoers 也被冲掉时通知一条手动命令(诚实边界: /etc 侧免密文件升级必被冲)
+- 清点范围新增 Decky Loader 系统单元(plugin_loader.service)
+- 部署时固化主脚本路径到 main.conf —— 修复旧版自愈脚本部署后找不到主脚本、
+  自动恢复从未真正生效的隐藏 bug
+- sudoers 规则补主脚本调用(旧规则只放行自愈脚本自身, 脚本内 sudo -n 永远失败)
+
+### 修复
+- verify_step 的 dsh 判据与 2026-09-09 的 ~/.local 安装布局脱节, 导致步骤[7]
+  永远落地复核未通过; 现在新旧布局都认
+
+### 优雅化
+- 删除主脚本内嵌的自愈脚本副本(双份漂移根源), 缺文件时明确报错
+
 ## [1.0.0] - 2026-09-24
 
 基线版本（对应 steamos-setup.sh 十二步状态机 + 全部外围脚本）。

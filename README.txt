@@ -192,3 +192,11 @@ fix-inputplumber-cycle.sh
    - ls|grep 改 glob 循环; 通配符 -f 判断改为循环判定(nix ime 脚本)
 
 5. 日常自检: 修改任何脚本后跑一次 `bash check.sh`, 全绿再入库。
+
+【v1.1.0 升级自愈钩子】
+  - 步骤[12] 升级为版本变更钩子: 开机自动对比系统版本, 检测到原子更新即清点
+    被冲掉内容(last-report.txt + 桌面通知), sudoers 幸存时全自动恢复。
+  - 大版本升级后 sudoers 必被冲, 首次恢复仍需手动:
+        sudo bash steamos-setup.sh --after-upgrade
+    之后的局部损坏全自动修复, 无需人工。
+  - 顺带修复: 步骤[7] dsh 落地复核与新安装路径脱节的问题。
