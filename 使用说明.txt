@@ -115,7 +115,8 @@ free-rootfs.sh
 【可选组件安装.sh】(必装主线之外的增强项, 带菜单)
 ======================================================================
   用法: bash 可选组件安装.sh        (或在"重装后先运行我"里选 y 自动拉起)
-  当前条目:  微信 / Firefox Nightly / DeepSeek Harness 桌面版 / WPS Office
+    当前条目:  微信 / Firefox Nightly / DeepSeek Harness 桌面版 / WPS Office
+                / 鸿蒙字体 HarmonyOS Sans / NextKde 桌面外壳
   - 微信: 官方原生版沙盒封装 wechat-universal-bwrap, 自动补中文字体。
   - Firefox Nightly: 官方包解到 /home —— 不占 rootfs、无沙箱、扛原子升级,
     且因目录可写, Nightly 自带更新器能真正自更新。装完可顺手回收系统 firefox
@@ -191,6 +192,32 @@ install-harmony-sans-home.sh
   取源页: https://developer.huawei.com/consumer/cn/design/resource/
 
   (WPS Office 与 DeepSeek Harness 桌面版的安装说明已并入上面的 install-app-home.sh 一节)
+
+install-nextkde-home.sh
+  - 把 NextKde(KOS Desktop Shell: 基于 QuickShell 的 KDE Plasma 桌面外壳 ——
+    顶栏/Dock/启动器/全局搜索/通知中心)装进 /home。
+  - **本脚本包装上游官方安装器 `tools/kosctl`, 不重写构建逻辑** ——
+    上游自带 doctor/install/start/uninstall, 会自己装依赖、编译、处理 KWin 插件与 plasmashellrc。
+    本脚本只补三件上游不管、而本项目在乎的事:
+      ① 前置检查(Plasma6 Wayland / KWin≥6.4 / quickshell), 缺什么先说清再动手
+      ② 源码与构建都放 ~/.local/opt/NextKde(= /home, 扛原子升级), 并记录构建时的 KWin 版本
+      ③ 把"会动系统哪些地方"讲明白, 并提供 --check 在升级后判定要不要重编
+  - ⚠️ 三件必须先知道的事(上游行为, 脚本会再要你确认一次):
+      ① 编译依赖(qt6/kf6/kwin 开发包 + go/cmake/ninja, 几百 MB)会装进 **rootfs**,
+         原子升级会冲掉 → 升级后重跑本脚本即可补齐并重编
+      ② `kosctl install` 把 plasmashellrc 的 ShellPackage 指向 KOS = **切换桌面外壳**,
+         切换会让 plasmashell 另建 appletsrc → **壁纸会重置**(上游会自动迁移旧的)
+      ③ KWin 特效插件是**编译期**产物, 与 KWin 版本耦合: KWin 升级后可能要重编
+         (本脚本记录构建时版本, --check 会比对提示; 特效报错时可在系统设置里临时停用)
+  - 上游没有预编译发行物(只发源码), AUR 里也没有 → 必须编译。
+    quickshell 在 Arch 官方 extra 里, 不必走 AUR。
+  - 用法: bash install-nextkde-home.sh              # 安装/修复(幂等; clone/更新→doctor→install)
+          bash install-nextkde-home.sh --check      # 只读自检(含"KWin 是否已升级"判定)
+          bash install-nextkde-home.sh --doctor     # 只跑上游体检, 什么都不动
+          bash install-nextkde-home.sh --apps       # 连可选应用(日历/待办/天气/音乐)
+          bash install-nextkde-home.sh --no-plugins # 不装 KWin 插件/装饰(纯外壳, 依赖更少)
+          bash install-nextkde-home.sh --uninstall  # 调上游 uninstall
+          MIRROR=https://gh-proxy.com bash install-nextkde-home.sh   # clone 走镜像
 
 install-workbuddy-home.sh
   - 让 WorkBuddy 既"原生无沙箱"又"扛原子升级"。

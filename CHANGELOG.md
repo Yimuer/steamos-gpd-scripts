@@ -6,6 +6,30 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [3.6.0] - 2026-09-25
+
+### 新增可选组件: NextKde（KOS Desktop Shell）
+- 新增 `install-nextkde-home.sh` + 可选菜单第 6 项。NextKde 是基于 QuickShell 的
+  **KDE Plasma 桌面外壳**（顶栏/Dock/启动器/全局搜索/通知中心），GPL-3.0。
+- **定位: 包装上游官方安装器 `tools/kosctl`，不重写构建**。上游自带
+  `doctor|build|install|start|uninstall`，会自己装依赖、编译、处理 KWin 插件与 plasmashellrc；
+  重写一遍只会与上游脱节。本脚本只补三件上游不管而本项目在乎的事：
+  ① 前置检查（Plasma6 Wayland / KWin≥6.4 / quickshell）② 源码与构建都放
+  `~/.local/opt/NextKde`（= /home，扛原子升级）并**记录构建时的 KWin 版本**
+  ③ 把"会动系统哪些地方"讲明白 + `--check` 在升级后判定要不要重编。
+- 查证过的事实：上游**没有任何 release**（只能源码编译）、**AUR 里没有**、
+  但 `quickshell` 在 Arch 官方 `extra`（0.3.1），不必走 AUR。
+- **三条会改系统的后果，脚本会先讲清并要确认**（`--yes` 可跳过，非交互环境安全退出）：
+  ① 编译依赖（qt6/kf6/kwin 开发包 + go/cmake/ninja，几百 MB）进 **rootfs**，升级被冲；
+  ② `kosctl install` 会改 `plasmashellrc` 的 `ShellPackage` = **切换桌面外壳**，
+     切换会让 plasmashell 另建 appletsrc → **壁纸重置**（上游自动迁移旧的）；
+  ③ KWin 特效插件与 KWin 版本耦合，升级后可能要重编（`--check` 比对 `6.4.4 → 6.5.0` 之类）。
+- 关于"升级后自动恢复"的取舍：**没有把它塞进自愈清单**。自愈清单的修复动作绑定
+  "主脚本步骤号"，而这是可选组件、没有步骤号；更要紧的是，让自愈服务在每次登录时
+  静默往 rootfs 拉几百 MB 编译依赖，正是本项目一直在避免的事。
+  所以采取"**检测自动、大动作需你点头**"：`--check` 会准确告诉你是依赖被冲了还是
+  KWin 变了，以及该跑哪条命令。
+
 ## [3.5.0] - 2026-09-25
 
 ### 重构: 4 个 app 安装脚本 → 1 个单引擎(路线图第 2 项)

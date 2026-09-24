@@ -77,6 +77,7 @@
 | `install-app-home.sh` | **单引擎**: `firefox-nightly` / `dsh-desktop` / `wps-office` 三个"下载便携包 → 装 /home 或 /opt"的安装器 | 骨架只写一遍, 各应用一段 profile; `--list` / `--check` / `--force` / `REFETCH=1` |
 | `install-workbuddy-home.sh` | WorkBuddy 的 `/home` 自持化 | ⚠️ 不并入引擎: 它不下载产物, 而是让 AUR 装好的 `/opt/WorkBuddy` 在 /home 下自持 |
 | `install-harmony-sans-home.sh` | 鸿蒙字体装成系统字体(装 `~/.local/share/fonts`, 扛升级) | 不用 AUR 包(rootfs); fontconfig 落 conf.d/ 不覆盖 fonts.conf |
+| `install-nextkde-home.sh` | **NextKde(KOS 桌面外壳)装进 `/home`** | **包装上游 `tools/kosctl`, 不重写构建**; 前置检查 + 记录 KWin 版本(升级后判定插件要不要重编); 会切桌面外壳, 故有显式确认 |
 | `verify-upstreams.sh` | **上游依赖体检（只读联网）** | 发布前/重装前跑；区分下载路径与 API 路径；见 §9.1 |
 | `tools/shellcheck(.exe)` | 可选：放这就能让 `check.sh` 第 3 节生效 | 当前全脚本 warning = 0，别退回 |
 

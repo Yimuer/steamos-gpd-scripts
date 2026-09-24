@@ -165,6 +165,35 @@ if [ -f install-harmony-sans-home.sh ]; then
 else
     bad "install-harmony-sans-home.sh 缺失"
 fi
+# 2.12 可选组件: NextKde(KOS 桌面外壳) —— 它必须"包装上游", 不能自己重写构建
+if [ -f install-nextkde-home.sh ]; then
+    pass "install-nextkde-home.sh 存在"
+    bash -n install-nextkde-home.sh 2>/dev/null || bad "install-nextkde-home.sh 语法错误"
+    grep -q 'tools/kosctl' install-nextkde-home.sh \
+        && pass "包装上游官方安装器 kosctl(不自己重写构建)" \
+        || bad "没有调上游 kosctl —— 重写构建逻辑会与上游脱节"
+    grep -q 'NEXTKDE_DIR:-$REAL_HOME/.local/opt/NextKde' install-nextkde-home.sh \
+        && pass "源码/构建目录在 /home(原子升级幸存)" \
+        || bad "源码目录被改出 /home"
+    # 三条必须提前告知用户的后果(rootfs 依赖 / 切外壳 / KWin 插件耦合)
+    grep -q 'rootfs' install-nextkde-home.sh \
+        && pass "已告知编译依赖会进 rootfs(升级被冲)" \
+        || bad "没告知 rootfs 后果"
+    grep -q 'ShellPackage' install-nextkde-home.sh \
+        && pass "已告知会切换桌面外壳(plasmashellrc ShellPackage)" \
+        || bad "没告知切换外壳的后果(壁纸会重置)"
+    grep -q 'kwin-version-at-build' install-nextkde-home.sh \
+        && pass "记录了构建时的 KWin 版本(用于升级后判定插件要不要重编)" \
+        || bad "没记录 KWin 版本 —— KWin 升级后无法判定插件是否失配"
+    grep -q '输入 yes' install-nextkde-home.sh \
+        && pass "换桌面外壳前有显式确认(非交互环境会安全退出)" \
+        || bad "缺确认步骤 —— 不该默默把桌面外壳换掉"
+    grep -q 'install-nextkde-home.sh' 可选组件安装.sh \
+        && pass "可选组件菜单已接入 nextkde" \
+        || bad "可选组件菜单未接入 install-nextkde-home.sh"
+else
+    bad "install-nextkde-home.sh 缺失"
+fi
 
 echo "════════ 3) shellcheck (可选, 未安装则跳过) ════════"
 # 找 shellcheck: 先在 PATH 里找, 再找本目录 tools/ 下的(shellcheck 或 shellcheck.exe)

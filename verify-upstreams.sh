@@ -127,6 +127,11 @@ WTAG="$(gh_tag xfangfang/wiliwili)"; WTAG="${WTAG:-v1.6.0}"
 probe_gh "wiliwili flatpak 包 $WTAG" \
       "https://github.com/xfangfang/wiliwili/releases/download/$WTAG/wiliwili-Linux-x86_64.flatpak"
 
+# NextKde: 只发源码、不发 release, 所以探的是"上游安装器还在不在原路径"
+# (install-nextkde-home.sh 依赖 tools/kosctl; 上游改结构就会失效)
+probe "NextKde 上游 tools/kosctl 路径" \
+      "https://raw.githubusercontent.com/SuceV587/NextKde/main/tools/kosctl" 1
+
 # ── 4. AUR 包(主脚本 step3 装 WorkBuddy 靠它) ──────────────────────────
 # ⚠ AUR RPC 会限流: 连续快速查询可能返回空体。故重试一次, 且"无响应"只算提示不判死。
 head_ "④ AUR 包"
