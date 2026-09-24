@@ -10,12 +10,13 @@ cd "$(dirname "$0")" || exit 1
 bash ./steamos-setup.sh
 rc=$?
 echo
-printf "是否安装可选组件(微信 / Firefox Nightly / Harness 桌面版 等)? [y/N] "
-read -r opt
+printf "是否安装可选组件(微信 / Firefox Nightly / Harness 桌面版 / 鸿蒙字体)? [y/N] "
+# -t 守卫: 无终端时(被管道/定时任务调用)裸 read 会永久挂起
+read -r -t 300 opt || opt="n"
 opt2="跳过"
 case "$opt" in
     y|Y|yes|YES) bash ./可选组件安装.sh; opt2="退出码 $?" ;;
 esac
 echo
 echo "──── 结束：必装退出码 $rc / 可选:$opt2 （按回车关闭）────"
-read -r
+read -r -t 300 || true      # 无终端时不等, 直接退出
