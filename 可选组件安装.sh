@@ -84,7 +84,7 @@ install_wechat() {
     # ② 仓库里确实没有(2026-09 实测 archlinuxcn 已无任何微信包) → 退到 AUR。
     echo "  [!] 已配置的仓库里没有微信包 —— 改从 AUR 装(官方 deb 的沙盒封装)"
     echo "      注意: 这条路会装进 /usr(rootfs), 原子升级后会被冲掉且要重装;"
-    echo "      若想要「装一次就扛升级」的效果, 可参照 install-wps-office-home.sh 的"
+    echo "      若想要「装一次就扛升级」的效果, 可参照 install-app-home.sh wps-office 的"
     echo "      「官方 deb → /opt + 入口/桌面项放 /home」套路自行处理。"
     local a=""
     for a in yay paru; do command -v "$a" >/dev/null 2>&1 && break; a=""; done
@@ -113,41 +113,40 @@ install_wechat() {
 }
 
 install_firefox_nightly() {
-    # 逻辑都在独立脚本里(单独跑也一样), 这里只做薄封装, 保持"一处实现"
+    # 三个"下载便携包"类的应用共用 install-app-home.sh 这一个引擎
+    # (骨架只写一遍, 各应用只贡献一段 profile); 独立装也照样能用
     local s
-    s="$(cd "$(dirname "$0")" && pwd)/install-firefox-nightly-home.sh"
+    s="$(cd "$(dirname "$0")" && pwd)/install-app-home.sh"
     if [ ! -f "$s" ]; then
         echo "  [✗] 找不到 $s"
         return 1
     fi
-    echo "  · 调用 install-firefox-nightly-home.sh (下载约 100MB, 落到 /home)"
-    bash "$s"
+    echo "  · 调用 install-app-home.sh firefox-nightly (下载约 100MB, 落到 /home)"
+    bash "$s" firefox-nightly
 }
 
 install_dsh_desktop() {
-    # 同上: 逻辑都在独立脚本里, 这里薄封装
     local s
-    s="$(cd "$(dirname "$0")" && pwd)/install-dsh-desktop-home.sh"
+    s="$(cd "$(dirname "$0")" && pwd)/install-app-home.sh"
     if [ ! -f "$s" ]; then
         echo "  [✗] 找不到 $s"
         return 1
     fi
-    echo "  · 调用 install-dsh-desktop-home.sh (官方 AppImage 约 90MB, 解到 /home)"
+    echo "  · 调用 install-app-home.sh dsh-desktop (官方 AppImage 约 90MB, 解到 /home)"
     echo "    注意: 它的内核要求可能高于本包 step[7] 固定的 dsh 版本, 装完看输出提示"
-    bash "$s"
+    bash "$s" dsh-desktop
 }
 
 install_wps_office() {
-    # 同上: 逻辑都在独立脚本里, 这里薄封装
     local s
-    s="$(cd "$(dirname "$0")" && pwd)/install-wps-office-home.sh"
+    s="$(cd "$(dirname "$0")" && pwd)/install-app-home.sh"
     if [ ! -f "$s" ]; then
         echo "  [✗] 找不到 $s"
         return 1
     fi
-    echo "  · 调用 install-wps-office-home.sh (官方 deb 约 545MB; 解到 /opt 不占 rootfs)"
+    echo "  · 调用 install-app-home.sh wps-office (官方 deb 约 545MB; 解到 /opt 不占 rootfs)"
     echo "    注意: 装前必须完全退出 WPS; 首次会顺带补运行库与中文字体"
-    bash "$s"
+    bash "$s" wps-office
 }
 
 install_harmony_sans() {

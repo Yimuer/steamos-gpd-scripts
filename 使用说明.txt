@@ -119,7 +119,7 @@ free-rootfs.sh
   - 微信: 官方原生版沙盒封装 wechat-universal-bwrap, 自动补中文字体。
   - Firefox Nightly: 官方包解到 /home —— 不占 rootfs、无沙箱、扛原子升级,
     且因目录可写, Nightly 自带更新器能真正自更新。装完可顺手回收系统 firefox
-    那 290M: bash install-firefox-nightly-home.sh --remove-system
+      那 290M: bash install-app-home.sh firefox-nightly --remove-system
   - DeepSeek Harness 桌面版: 官方 AppImage 解到 /home(刻意不用 deb)。
     ⚠️ 它推荐的内核版本(包内 version-recommend.json, 当前 0.1.5-rc.3)高于本包
     step[7] 固定的 dsh 版本(0.1.2-rc.1), 而桌面版会优先用已装的 CLI 核心
@@ -142,20 +142,37 @@ free-rootfs.sh
 ======================================================================
 【备用脚本】(steamos-setup.sh 已覆盖同样功能; 以下供单步/手动补救用)
 ======================================================================
-install-firefox-nightly-home.sh
-  - 让 Firefox Nightly 既"原生无沙箱"又"扛原子升级"。
-  - 背景: pacman/AUR 装的 firefox* 都在 /usr(rootfs), 原子升级整块换掉 → 每次升级
-    都得重装。Mozilla 官方只发 tar.xz(原生包, 无 flatpak 沙箱), 解到 /home 就永久幸存。
-  - 附带好处: ①目录可写 → Nightly 自带更新器能真正自更新, 日常连脚本都不用跑
-              ②不占 rootfs, 反过来可回收系统 firefox 那 290M
-              ③无 bubblewrap 沙箱(flatpak 版连 ~/下载、本地服务都受限)
-  - 用法: bash install-firefox-nightly-home.sh                 # 安装/更新(默认 zh-CN)
-          bash install-firefox-nightly-home.sh --check         # 升级后只读自检
-          bash install-firefox-nightly-home.sh --lang en-US     # 换英文原版
-          bash install-firefox-nightly-home.sh --force          # 版本没变也强制重装
-          bash install-firefox-nightly-home.sh --remove-system  # 卸系统 firefox 回收 290M
-  - 下载源: 默认优先 archive.mozilla.org(实测同一文件比官方 cdn 快一两个数量级),
-    失败自动回退官方地址; 也可 FFN_MIRROR=https://你的镜像 自备。
+install-app-home.sh <app>
+  - 三个"下载便携包 → 装进 /home 或 /opt"的安装器共用一个引擎:
+      firefox-nightly   官方 tar.xz   → ~/.local/opt/firefox-nightly
+      dsh-desktop       官方 AppImage → ~/.local/opt/deepseek-harness-desktop
+      wps-office        官方签名 deb  → /opt/kingsoft + ~/.local
+    骨架只写一遍, 各应用只贡献一段 profile; **仍是单文件, 可单独拷到新机器**。
+  - 共同点: 准原子替换(旧树先挪 .prev, 校验通过才删; 失败回滚) + 版本标记
+    → 重跑不会白下载/白复制(WPS 那 2GB 尤其重要); 入口/桌面项/图标一律另存 ~/.local,
+    所以原子升级后菜单照样在。已是同版本时只补入口与桌面项, 不动本体。
+  - 为什么这么选发行物(每个都是踩过坑的):
+      · Firefox: pacman/AUR 版在 /usr(rootfs) 升级被冲; Mozilla 只发 tar.xz(原生无沙箱),
+        解到 /home 后目录可写 → 自带更新器能真正自更新, 还能反手回收系统 firefox 的 290M。
+      · dsh 桌面版: 官方 deb 依赖 libappindicator3-1 + libwebkit2gtk-4.1-0 + libgtk-3-0,
+        SteamOS 都没有; AppImage 自带运行时。入口自动选 FUSE 直跑(应用内自更新可替换自身)
+        或解压树兜底(不需要 libfuse2)。
+      · WPS: AUR 的 wps-office 与 wps-office-cn 都把 2GB 重定位到 /usr/lib → 必 ENOSPC;
+        而这个 deb 的 control 写着 Relocations: /opt/kingsoft(/opt 是 bind-mount 到 home
+        分区的, 既不占 rootfs 又扛升级)。桌面项必须同时改 Exec 与 TryExec ——
+        只改 Exec 的话 TryExec 找不到会把整个菜单项隐藏掉。
+  - 用法: bash install-app-home.sh --list                      # 列出支持的 app
+          bash install-app-home.sh firefox-nightly             # 安装/修复(幂等)
+          bash install-app-home.sh wps-office --check          # 只读自检
+          bash install-app-home.sh dsh-desktop --force         # 强制重装(仍用缓存)
+          bash install-app-home.sh firefox-nightly --remove-system  # 卸系统 firefox 回收 290M
+          bash install-app-home.sh firefox-nightly --lang en-US     # 换英文原版
+          bash install-app-home.sh dsh-desktop --version v0.17.1    # API 不可达时钉版本
+          环境变量: MIRROR=https://镜像 REFETCH=1(强制重新下载)
+                    FFN_MIRROR=https://…(firefox 自备镜像)  WPS_DEB=/路径/x.deb
+  - ⚠️ dsh 桌面版包内建议的 CLI 版本(0.1.5-rc.3)高于本包 step[7] 固定的 0.1.2-rc.1,
+    而桌面版"如已装 dsh 则优先用安装版本" → 装完务必看脚本打出的版本提示再决定。
+  - 装前若 WPS 在运行会拦下(官方 preinst 也是先 killall); 首次会补运行库与中文字体。
 
 install-harmony-sans-home.sh
   - 把鸿蒙字体(HarmonyOS Sans)装成系统字体, 装进 ~/.local/share/fonts → 扛原子升级。
@@ -173,42 +190,7 @@ install-harmony-sans-home.sh
           HARMONY_VARIANT=TC|ALL bash install-harmony-sans-home.sh
   取源页: https://developer.huawei.com/consumer/cn/design/resource/
 
-install-wps-office-home.sh
-  - 把 WPS Office 中文版装到 /opt + /home。
-  - 为什么走官方 deb 不走 AUR: AUR 的 wps-office 与 wps-office-cn 在 PKGBUILD 里
-    把 /opt/kingsoft/wps-office 改成 /usr/lib, 把 2GB 塞进 rootfs(5G) → 必 ENOSPC。
-    而这个 deb 的 control 自己写着 `Relocations: /opt/kingsoft`(11.1.0 与 12.1.2 一致),
-    按官方布局装 → 落在 /opt(= bind-mount 到 home 分区), 既不占 rootfs 又扛原子升级。
-  - 取源: 现行(12.x)是「Linux2023 通道 + 时间戳签名」(?t=&k=md5(key+uri+t)),
-    脚本按官方方案构造; 老通道(≤11.x)静态 URL 自动兜底。
-  - /home 自持化: 入口(官方包装脚本的副本 + WPS_X11 薄壳)、桌面项(Exec/TryExec 改绝对路径,
-    否则 TryExec 找不到会把菜单项隐藏掉)、图标、自定义 mime 全部另存一份 → 升级后菜单照样在。
-  - 本体是准原子替换(旧树先挪 .prev, 校验通过才删; 失败回滚) + 版本标记 →
-    重跑不会白复制 2GB(升级后通常只需补 /home 侧入口)。
-  - 不需要 steamos-readonly disable: 只写 /opt(独立 rw 挂载)与 ~/.local, 不碰 /usr。
-  - 用法: bash install-wps-office-home.sh              # 安装/修复
-          bash install-wps-office-home.sh --check      # 只读自检
-          bash install-wps-office-home.sh --force      # 强制重装
-          WPS_VER=12.1.2.28080 bash install-wps-office-home.sh
-          WPS_DEB=/path/xxx.deb bash install-wps-office-home.sh   # 用本地已下好的 deb
-  - 装前须完全退出 WPS(官方 preinst 也是先 killall); 首次会补运行库与中文字体。
-
-install-dsh-desktop-home.sh
-  - 把 DeepSeek Harness 桌面版(Tauri)装进 /home。
-  - 为什么用 AppImage 不用 deb: 官方 deb 的 Depends 是
-    libappindicator3-1 + libwebkit2gtk-4.1-0 + libgtk-3-0, SteamOS 上都没装,
-    装进 /usr 要吃几百 MB rootfs 且升级后被冲; AppImage 自带这些运行时, 落 /home 就永久幸存。
-  - 布局: ~/.local/opt/deepseek-harness-desktop/{AppImage 原文件, app/ 解压树};
-    入口自动选 FUSE 直跑(应用内自更新可替换自身)或解压树兜底(不需要 libfuse2)。
-  - ⚠️ 内核版本: 包内 resources/version-recommend.json 声明推荐 dsh 版本
-    (v0.17.0 要求 >= 0.1.5-rc.3), 高于本包 step[7] 固定的 0.1.2-rc.1,
-    而桌面版"如已装 dsh 则优先用安装版本" → 脚本会打出差异, 需自行决定怎么处理。
-  - 装前会把现有 ~/.local/bin/dsh 备份成 dsh.predshbak(桌面版可能注册自己的 shim)。
-  - 用法: bash install-dsh-desktop-home.sh                # 安装/更新
-          bash install-dsh-desktop-home.sh --check        # 只读自检
-          bash install-dsh-desktop-home.sh --version v0.17.0  # API 不可达时指定版本
-          bash install-dsh-desktop-home.sh --force        # 已是最新也重装
-          MIRROR=https://ghfast.top bash install-dsh-desktop-home.sh  # 指定镜像
+  (WPS Office 与 DeepSeek Harness 桌面版的安装说明已并入上面的 install-app-home.sh 一节)
 
 install-workbuddy-home.sh
   - 让 WorkBuddy 既"原生无沙箱"又"扛原子升级"。

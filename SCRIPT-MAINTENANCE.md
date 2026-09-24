@@ -74,9 +74,9 @@
 | `fix-endfield-qt.sh` | 补终末地 Qt WebEngine 运行时资源（见 [6d]） | 幂等，支持 `--dry-run` |
 | `switch-compat-tool.py` | 切换 Steam 兼容层（须先彻底退出 Steam） | 支持 `--dry-run`；已修 `pgrep -f steam` 误判 |
 | `可选组件安装.sh` | 必装主线之外的增强项菜单（带 ✓ 状态） | 扩展点见 1.3；非 pacman 项用 `MENU_CHECK` |
-| `install-firefox-nightly-home.sh` | **Firefox Nightly 装进 `/home`（无沙箱 + 扛原子升级）** | `--check` / `--lang` / `--force` / `--remove-system` |
-| `install-dsh-desktop-home.sh` | **DeepSeek Harness 桌面版装进 `/home`** | 取 AppImage 不取 deb（理由见 3.10）；`--check` / `--version` / `--force` |
-| `install-wps-office-home.sh` | **WPS Office 装到 `/opt` + `/home`** | 取官方 deb（`Relocations: /opt/kingsoft`）；禁用 AUR 的 `/usr/lib/office6` 布局 |
+| `install-app-home.sh` | **单引擎**: `firefox-nightly` / `dsh-desktop` / `wps-office` 三个"下载便携包 → 装 /home 或 /opt"的安装器 | 骨架只写一遍, 各应用一段 profile; `--list` / `--check` / `--force` / `REFETCH=1` |
+| `install-workbuddy-home.sh` | WorkBuddy 的 `/home` 自持化 | ⚠️ 不并入引擎: 它不下载产物, 而是让 AUR 装好的 `/opt/WorkBuddy` 在 /home 下自持 |
+| `install-harmony-sans-home.sh` | 鸿蒙字体装成系统字体(装 `~/.local/share/fonts`, 扛升级) | 不用 AUR 包(rootfs); fontconfig 落 conf.d/ 不覆盖 fonts.conf |
 | `verify-upstreams.sh` | **上游依赖体检（只读联网）** | 发布前/重装前跑；区分下载路径与 API 路径；见 §9.1 |
 | `tools/shellcheck(.exe)` | 可选：放这就能让 `check.sh` 第 3 节生效 | 当前全脚本 warning = 0，别退回 |
 
@@ -85,8 +85,10 @@
 `可选组件安装.sh` 是 menu-driven 的独立脚本（`sudo -E` 自提权，**不属** 14 步主线）。
 新增条目**只改三处**，不要散落逻辑：
 
-1. 写 `install_xxx()` —— 逻辑重的话就 call 独立脚本（如 `install_firefox_nightly`
-   薄封装 `install-firefox-nightly-home.sh`），保持"一处实现"。
+  1. 写 `install_xxx()` —— 逻辑重的话就 call 独立脚本（如 `install_firefox_nightly`
+     薄封装 `install-app-home.sh firefox-nightly`），保持"一处实现"。
+     若是"下载便携包 → 装 /home 或 /opt"这一类，**优先给 `install-app-home.sh` 加一段 profile**，
+     而不是再写一个新脚本（加 profile 只需写"取源/解包/入口/桌面项/额外步骤"那几段）。
 2. 注册表各加一行：`MENU_ORDER` / `MENU_NAME` / `MENU_PKGS`。
 3. 菜单 `case` 分支加一行。
 
@@ -923,7 +925,7 @@ Decky 插件与其配置、非 Steam 快捷方式、dconf 输入法配置、脚�
 ## 3.10 通用套路：把应用改成「/home 自持」（2026-09-24 定案）
 
 已用于 **WorkBuddy**（`install-workbuddy-home.sh`）与 **Firefox Nightly**
-（`install-firefox-nightly-home.sh`）。以后再有"某某应用一升级就没了"照这个来。
+（`install-app-home.sh firefox-nightly`）。以后再有"某某应用一升级就没了"照这个来。
 
 ### 第一步：先分清哪些会被冲（别凭印象）
 
@@ -1111,7 +1113,7 @@ rootfs 只剩一个几字节的软链。
 1. **btrfs 元数据平衡**（零数据风险）：`Metadata,DUP` 分配 493M 但实占仅 191M，
    `btrfs balance start -musage=30/60/90 /` 可回收 **~300M**。
 2. **删无依赖包**：`gcc` 212M（无任何包依赖）、孤儿包（asar/debugedit/fakeroot/pkgconf）。
-3. **删 firefox** 290M（无依赖。若已用 `install-firefox-nightly-home.sh` 把
+  3. **删 firefox** 290M（无依赖。若已用 `install-app-home.sh firefox-nightly` 把
    Firefox Nightly 装进 `/home`，删掉**不损失浏览器**；否则会失去自带浏览器，需用户确认）。
 4. ~~**zstd 重压缩**（高级）：rootfs 默认未启用压缩~~
    **❌ 2026-09-09 实测证伪，别再跑。** 抽样 `/usr` 下 10 个 >5M 的文件，
@@ -1229,7 +1231,7 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
 |---|---|---|---|---|
 | 1 | ~~把 `steamos-nix/` 整体迁到独立仓库~~ | — | — | **用户决定：不迁**（2026-09-25）。保留在原地，好处是探路产出（分区表、字体打包踩坑）留在同一个仓库里可随时对照 |
 | 1b | 保留现状 + 写清它的定位与"别去重" | 零风险；读者知道它是什么 | 仓库体积不变 | **已做**（`steamos-nix/README.md` + 主 README §八 + 本文件 §10.3b） |
-| 2 | **4 个 `install-*-home.sh` 合并为「单引擎 + 每应用一份 profile」**：`install-app-home.sh <app>`，profile 里写「下载 URL 形态 / 解包方式 / 落点是 /home 还是 /opt / 入口与图标发现规则 / 系统依赖 / check 判据」 | 消除约 480 行重复；**仍然只有一个文件，自包含性不丢**；新增同类应用变成"加一段 profile" | 4 个已验证脚本要重构成 1 个，并**全部重测**（Firefox tar.xz / dsh AppImage / WPS deb / LocalSend） | 收益最大，但需专门一轮回归 |
+| 2 | ~~4 个 `install-*-home.sh` 合并为「单引擎 + profile」~~ | — | — | **已完成（2026-09-25 v3.5.0）**：新增 `install-app-home.sh`，覆盖 firefox / dsh / wps 三个；净减 719 行。⚠️ **workbuddy 刻意不并入**（它不下载产物，属另一物种），理由写在引擎头部 |
 | 3 | **步骤表驱动**：一张 `STEPS` 表定义「函数名 / 编号 / 关键词 / 标题 / 落地判据」，让 `step_label`、`map_step`、`FUNCS`、help 全部由表派生 | 加一个步骤从**改 9 处**变成**改 1~2 处**，不会再漏接注册点（历史上 README 步骤列表、本节的步骤表都曾漏更新） | 动主脚本的核心分发逻辑；`verify_step` 是函数式判据，可能只能半自动化 | 收益高，风险中等 |
 | 4 | ~~两份 README 归一~~ **已完成（2026-09-25）**：`README.txt` → `使用说明.txt`，顶部加一句"详细版用法，概览看 README.md"；README.md / 本文件 / 重装流程.md 的指向同步更新 | 消除"两份说明书"的漂移 | — | **结案** |
 | 5 | 自愈清单 `CHECKS` 与步骤落地物是**两处重复的知识**（已有 `check.sh` 断言兜底） | 理论可派生 | 抽象成本大于收益 | **建议不做**，保持断言 |

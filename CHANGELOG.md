@@ -6,6 +6,39 @@
 - 修订号：bug 修复与健壮性加固
 每次提交后打标签 `vX.Y.Z`；`bash check.sh` 全绿才允许提交（pre-commit 钩子强制）。
 
+## [3.5.0] - 2026-09-25
+
+### 重构: 4 个 app 安装脚本 → 1 个单引擎(路线图第 2 项)
+- 新增 **`install-app-home.sh`**: `firefox-nightly` / `dsh-desktop` / `wps-office` 共用一个引擎,
+  骨架(取源/解包/准原子替换/入口/桌面项/图标/自检)只写一遍, 各应用只贡献一段 profile。
+  **仍然是单文件, 可单独拷到新机器** —— 用"单引擎 + profile"而不是"抽公共库", 正是为了保住这点。
+- **删掉 3 个旧脚本**(`install-firefox-nightly-home.sh` / `install-dsh-desktop-home.sh` /
+  `install-wps-office-home.sh`, 合计 1382 行); 引擎 663 行 → **净减 719 行**。
+- ⚠️ **`install-workbuddy-home.sh` 刻意不并入**: 它不下载任何产物, 而是"让 AUR 装好的
+  `/opt/WorkBuddy` 在 /home 下自持", 与"下载便携包"是两个物种。硬塞进来只会得到一堆
+  `if app == workbuddy` 特例分支 —— 引擎头部已写明原因, 免得后人再试一次。
+- 功能不缩水: `--lang` / `--version` / `--remove-system`(卸系统 firefox 回收 290M) 都保留,
+  且**用错 app 会明确报错**而不是默默忽略。
+- 顺带改进两处语义: ①**已有缓存就用, `--force` 不再逼着重新下载**(离线时 `--force` 才装得上),
+  想强制重下用 `REFETCH=1`; ②**已是同版本时只补入口/桌面项, 不动本体**(WPS 那 2GB 不该白复制)。
+- 三个 app 都用隔离 harness(假 tar.xz / 可自解压的假 AppImage / 假 deb + 替身工具)逐个验通,
+  期间**抓出并修掉 4 个真 bug**(见下), 全部落地物与旧脚本逐项比对一致。
+
+### 重构中实测抓出的 bug(都是"看起来能跑"的那种)
+1. **`fetch()` 里 `local ok=0` 遮蔽了 `ok()` 函数** —— 函数内调 `ok "..."` 会失败。
+2. **`ARCHIVE="$(fetch ...)"` 里 fetch 的提示走 stdout** —— 路径被日志污染,
+   后面 `bsdtar -xf "$ARCHIVE"` 必然失败。修法: 提示全部 `>&2`。
+3. **`ffn_urls()` 以 `[ -n ... ] && printf` 收尾** —— 条件为假时函数返回 1,
+   调用方 `meta="$(app_urls)" || return 1` 会**静默退出**(firefox 装不上还不报错)。
+4. **`do_install` 直接调 `app_entry`(只打印内容)**, 没走 `write_entry` ——
+   入口内容全打到屏幕上, 文件根本没生成。
+
+### 校验
+`bash check.sh` 全绿(shellcheck warning = 0); 断言改盯新不变量(3 个 app 都注册在引擎里、
+各自的目标路径、WPS 的 Exec/TryExec 两条 sed、菜单接入), 并新增两条针对上述坑的防回归断言
+(fetch 必须 `>&2`、"同版本跳过"快速路径必须存在)。另用 `REFRESH` 路径实测过:
+firefox 真源下载 + WPS 官方 546MB 签名 URL 下载均成功。
+
 ## [3.4.0] - 2026-09-25
 
 ### 新增: 可选组件 —— 鸿蒙字体 HarmonyOS Sans 装成系统字体
