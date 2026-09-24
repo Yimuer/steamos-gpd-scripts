@@ -19,7 +19,7 @@ GAME="${1:-auto}"
 
 exec > >(tee "$OUT") 2>&1
 
-C_R=$'\033[0m'; C_RD=$'\033[31m'; C_Y=$'\033[33m'; C_B=$'\033[1m'
+C_R=$'\033[0m'; C_RD=$'\033[31m'
 hr()  { printf '\n════════ %s ════════\n' "$*"; }
 sub() { printf '  %s\n' "$*"; }
 
@@ -44,7 +44,7 @@ hr "2. 游戏进程 CPU(关键判定)"
 PAT='Wuthering|Endfield|Launcher|Client-Win64|steam'
 ps -eo pid,pcpu,etime,rss,comm,args --sort=-pcpu 2>/dev/null \
   | grep -aiE "$PAT" | grep -v grep | head -15 \
-  | while read -r pid pcpu etime rss comm args; do
+  | while read -r pid pcpu etime rss _comm args; do
         printf '  PID=%-7s CPU=%-6s%% 已运行=%-10s 内存=%-8s %s\n' \
             "$pid" "$pcpu" "$etime" "$((rss/1024))M" \
             "$(printf '%s' "$args" | cut -c1-90)"
@@ -175,8 +175,8 @@ hr "6. 兼容层与着色器缓存"
 printf '  已装兼容层:\n'
 ls -1 "$HOME/.local/share/Steam/compatibilitytools.d/" 2>/dev/null | sed 's/^/    /'
 printf '  鸣潮 shader 缓存:\n'
-find "$HOME/.local/share/Steam/steamapps/shadercache" -maxdepth 1 -newermt "-2 days" 2>/dev/null \
-    -printf '    %f  %TY-%Tm-%Td %TH:%TM\n' | head -10
+find "$HOME/.local/share/Steam/steamapps/shadercache" -maxdepth 1 -newermt "-2 days" \
+    -printf '    %f  %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | head -10
 sub "(刚重装系统时这里几乎为空 → 首次启动必然要现编译 shader, 黑屏一段时间是正常的)"
 
 hr "完成"

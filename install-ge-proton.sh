@@ -41,8 +41,10 @@ info "源:   $URL"
 info "目标: $TOOLS_DIR/$TAG"
 
 mkdir -p "$TOOLS_DIR"
-TMP=$(mktemp -d /tmp/ge-proton.XXXXXX)
-trap 'rm -rf "$TMP"' EXIT
+# ⚠ 别用 mktemp: ①/tmp 是 tmpfs, 509MB 下载等于吃内存 ②随机目录名会让 -C - 续传永远失效
+#   (仓库自己的教训)。用固定缓存目录, 断了下重跑能接着下。
+TMP="${HOME}/.cache/ge-proton"
+mkdir -p "$TMP"
 
 # ---- 下载（断点续传 + 重试）----
 info "下载主包（约 509MB）..."
@@ -61,7 +63,7 @@ fi
 
 # ---- 解压安装 ----
 info "解压到 $TOOLS_DIR ..."
-rm -rf "$TOOLS_DIR/$TAG"
+rm -rf "${TOOLS_DIR:?}/${TAG:?}"      # :? 守卫: 变量为空时宁可报错, 也别 rm -rf "/..."
 tar -xzf "$TMP/$TARBALL" -C "$TOOLS_DIR"
 chmod +x "$TOOLS_DIR/$TAG/proton" 2>/dev/null || true
 

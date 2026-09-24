@@ -40,7 +40,7 @@ TDP_DC="${TDP_DC:-40}"
 # ── 卸载 ──
 if [ "${1:-}" = "--uninstall" ]; then
     step "卸载 $PLUGIN_NAME"
-    rm -rf "$PLUGIN_DIR/$PLUGIN_NAME"
+    rm -rf "${PLUGIN_DIR:?}/${PLUGIN_NAME:?}"   # :? 守卫: 变量为空时宁可报错, 也别 rm -rf "/"
     systemctl restart plugin_loader 2>/dev/null || true
     info "已卸载并重启 Decky"
     exit 0
@@ -92,8 +92,9 @@ if [ ! -w "$PLUGIN_DIR" ]; then
     exit 1
 fi
 
-TMPZIP="$(mktemp "${HOME_DIR}/.cache/tdp.XXXXXX.zip" 2>/dev/null || mktemp /tmp/tdp.XXXXXX.zip)"
-trap 'rm -f "$TMPZIP"' EXIT
+# 固定缓存名而非 mktemp: 随机名会让 -C - 续传失效, 且失败时留垃圾
+mkdir -p "${HOME_DIR}/.cache" 2>/dev/null || true
+TMPZIP="${HOME_DIR}/.cache/tdp-download.zip"
 
 ok=0
 for prefix in "https://ghfast.top/" "https://gh-proxy.com/" "https://ghproxy.net/" ""; do
