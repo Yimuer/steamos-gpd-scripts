@@ -84,6 +84,7 @@ sudo bash steamos-setup.sh --after-upgrade
 | DeepSeek Harness 桌面版 | 官方 **AppImage** 解到 `/home` | deb 依赖 `libwebkit2gtk-4.1-0` 等一堆 SteamOS 没有的系统库 |
 | WPS Office 中文版 | 官方 **deb** → `/opt/kingsoft` | 该 deb 自己声明 `Relocations: /opt/kingsoft`；**AUR 两版都把它重定位到 `/usr/lib`，2GB 进 5G rootfs 必炸** |
 | 鸿蒙字体 HarmonyOS Sans | 官方 zip → `~/.local/share/fonts` + fontconfig 的 `conf.d/` | AUR 那套装进 `/usr/share/fonts`（rootfs，升级被冲）；官方直链带时间戳签名会过期，所以脚本不写死地址，改用 `HARMONY_ZIP` / `HARMONY_URL` |
+| NextKde 桌面外壳（KOS） | 源码 clone 到 `~/.local/opt/NextKde`，然后交给**上游官方安装器** `tools/kosctl` 编译安装 | 它自带安装器，重写构建只会与上游脱节。⚠️ 三件事脚本会先讲明白再要你确认：编译依赖进 **rootfs**（升级被冲）、会**切换桌面外壳**（改 `plasmashellrc`，壁纸会重置）、KWin 插件与 KWin 版本耦合（脚本记录构建时版本，`--check` 能判定要不要重编） |
 
 ---
 

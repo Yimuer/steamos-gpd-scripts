@@ -23,13 +23,14 @@ REAL_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6)"
 [ -n "$REAL_HOME" ] || REAL_HOME="/home/$REAL_USER"
 
 # ── 可选项注册表 ──
-MENU_ORDER=(wechat firefox-nightly dsh-desktop wps-office harmony-sans)
+MENU_ORDER=(wechat firefox-nightly dsh-desktop wps-office harmony-sans nextkde)
 declare -A MENU_NAME=(
     [wechat]="微信 (官方原生版沙盒封装 wechat-universal-bwrap, 含中文字体)"
     [firefox-nightly]="Firefox Nightly (官方包解到 /home: 不占 rootfs、无沙箱、扛原子升级)"
     [dsh-desktop]="DeepSeek Harness 桌面版 (Tauri; 官方 AppImage 解到 /home, 不占 rootfs)"
     [wps-office]="WPS Office 中文版 (官方 deb → /opt; 2GB 不占 rootfs、扛原子升级)"
     [harmony-sans]="鸿蒙字体 HarmonyOS Sans (装进 /home 扛升级; 需自备官方 zip)"
+    [nextkde]="NextKde 桌面外壳 (KOS: 顶栏/Dock/启动器/搜索; ⚠️ 需编译, 依赖进 rootfs)"
 )
 declare -A MENU_PKGS=(
     [wechat]="wechat-universal-bwrap"
@@ -37,6 +38,7 @@ declare -A MENU_PKGS=(
     [dsh-desktop]="deepseek-harness-desktop"
     [wps-office]="wps-office"
     [harmony-sans]="harmonyos-sans"
+    [nextkde]="nextkde"
 )
 # 可选: 自定义"是否已装"判据(函数名)。不设则用 pacman 查 MENU_PKGS 的包名。
 declare -A MENU_CHECK=(
@@ -44,6 +46,7 @@ declare -A MENU_CHECK=(
     [dsh-desktop]="dshdesk_installed"
     [wps-office]="wps_installed"
     [harmony-sans]="harmony_installed"
+    [nextkde]="nextkde_installed"
 )
 
 pkg_installed() { pacman -Qq "$1" >/dev/null 2>&1; }
@@ -58,6 +61,11 @@ wps_installed() { [ -x "$REAL_HOME/.local/bin/wps" ] && [ -d /opt/kingsoft/wps-o
 harmony_installed() {
     [ -d "$REAL_HOME/.local/share/fonts/harmonyos-sans-sc" ] && \
     [ -f "$REAL_HOME/.config/fontconfig/conf.d/10-harmony-sans.conf" ]
+}
+# NextKde: 源码在 ~/.local/opt/NextKde; 生效判据是 plasmashellrc 已指向 KOS
+nextkde_installed() {
+    [ -x "$REAL_HOME/.local/opt/NextKde/tools/kosctl" ] && \
+    grep -qi kos "$REAL_HOME/.config/plasmashellrc" 2>/dev/null
 }
 
 # ── 各组件安装函数 ──
@@ -166,6 +174,23 @@ install_harmony_sans() {
     bash "$s"
 }
 
+install_nextkde() {
+    # NextKde 自带官方安装器 tools/kosctl, 所以这里是"包装"而不是重写构建
+    local s
+    s="$(cd "$(dirname "$0")" && pwd)/install-nextkde-home.sh"
+    if [ ! -f "$s" ]; then
+        echo "  [✗] 找不到 $s"
+        return 1
+    fi
+    echo "  · 调用 install-nextkde-home.sh (clone 到 ~/.local/opt → 上游 kosctl 编译安装)"
+    echo "    ⚠️ 三件会改系统的事(脚本会再确认一次):"
+    echo "       ① 编译依赖(qt6/kf6/kwin 开发包等几百 MB)会进 **rootfs**, 升级被冲"
+    echo "       ② 会把 plasmashellrc 的 ShellPackage 指向 KOS(**切换桌面外壳**)"
+    echo "       ③ 会编译 KWin 特效插件(与 KWin 版本耦合, 升级后可能要重编)"
+    echo "    只想先看看不装: bash install-nextkde-home.sh --doctor"
+    bash "$s"
+}
+
 # ── 菜单循环 ──
 while true; do
     echo
@@ -202,6 +227,7 @@ while true; do
             dsh-desktop) install_dsh_desktop ;;
             wps-office) install_wps_office ;;
             harmony-sans) install_harmony_sans ;;
+            nextkde) install_nextkde ;;
             *) echo "  [!] $key 尚未实现" ;;
         esac
     done
