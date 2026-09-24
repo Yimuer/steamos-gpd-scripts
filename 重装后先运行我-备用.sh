@@ -10,7 +10,7 @@ cd "$(dirname "$0")" || exit 1
 bash ./steamos-setup.sh
 rc=$?
 echo
-printf "是否安装可选组件(微信等)? [y/N] "
+printf "是否安装可选组件(微信 / Firefox Nightly / Harness 桌面版 等)? [y/N] "
 read -r opt
 opt2="跳过"
 case "$opt" in

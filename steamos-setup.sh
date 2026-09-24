@@ -14,6 +14,8 @@
 #         到 /home 分区(/.steamos/offload/opt), 那 818M 不占 rootfs**; 真正落在
 #         rootfs 的只有 electron 依赖(约349M) + 编译最小集(约229M), 都在 /usr。
 #         输入: 系统自带 IBus(KWin 原生前端), 由系统自身配置维护, 本脚本不碰
+#         装完自动"自持化"(install-workbuddy-home.sh): 入口 + electron 运行时
+#         搬进 /home, 与 /usr、pacman 解耦 → 原子升级后直接可用, 不需重装
 #    [4] GPD Win5 背键                    (守护进程 py 放 /home, /etc 只留小unit)
 #    [5] Decky Loader + 预置插件          (默认装 SteamGridDB + ProtonDB Badges; DECKY_PLUGINS 可改/置空跳过)
 #    [6] 游戏支持: GE-Proton + 鸣潮/终末地 Steam 启动辅助
@@ -28,6 +30,7 @@
 #   [11] GPU 加速建议(纯提示): 按显卡给出 DLSS/FSR/XeSS 建议
 #   [12] 升级后自愈服务: 开机版本钩子, 自动检测并重建被原子更新冲掉的配置
 #   [13] wiliwili: B站第三方客户端(flatpak 用户级安装, 原子升级不冲)
+#   [14] LocalSend: 局域网传文件(官方 AppImage 解到 /home; 附带放行防火墙 53317)
 #
 #  用法:
 #    bash steamos-setup.sh            全量(0→9); 已成功的步骤会自动跳过
@@ -94,6 +97,22 @@ url_reachable() {
     local u="$1" code
     code="$(curl -sIL --connect-timeout 6 --max-time 12 -o /dev/null -w '%{http_code}' "$u" 2>/dev/null)"
     case "$code" in 200|301|302|303|307|308) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------- 查 GitHub 仓库最新 tag(直连失败自动走镜像 API) ----------
+# 境内直连 api.github.com 常不通。⚠ 实测(2026-09-24) ghfast.top 与 ghproxy.net
+# 对 api.github.com **一律 403**(它们只代理下载路径, 不代理 API), 列进去只会白等超时;
+# 真正可用的是 gh-proxy.com。
+# 用法: TAG="$(gh_latest_tag localsend/localsend)"
+gh_latest_tag() {
+    local repo="$1" api tag=""
+    for api in "https://api.github.com" "https://gh-proxy.com/https://api.github.com"; do
+        tag="$(curl -sL --connect-timeout 8 --max-time 25 \
+               "$api/repos/$repo/releases/latest" 2>/dev/null \
+               | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+        [ -n "$tag" ] && break
+    done
+    printf '%s\n' "$tag"
 }
 
 # ---------- 真实用户(经 sudo 保留原用户) ----------
@@ -300,7 +319,7 @@ device_profile
 show_help() {
     awk 'NR==1 {next} { if ($0 !~ /^#/) exit; sub(/^#+ ?/, ""); print }' "$0"
     echo
-    echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端"
+    echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端  14/localsend=局域网传文件"
     echo "设备画像: --device 只检测本机机型(免root): AMD掌机/AMD台式/Intel掌机/Intel+N卡台式"
     echo "断点续传: 直接重跑即可(已完好的步骤自动跳过, 被系统升级冲掉的会自动重建)"
     echo "         --reset 清进度; FORCE=1 或 --force 强制重跑"
@@ -314,6 +333,8 @@ show_help() {
     echo "         本步放一个 user 服务在 /home, 开机自动重建被冲掉的背键/inputplumber/NTP/IME)"
     echo "         (非 systemd / /etc 只读的环境会被拦下, 确认环境无误可 SKIP_ENV_CHECK=1)"
     echo "第[13]步 wiliwili: B站第三方客户端(flatpak 用户级; 运行时走 flathub, 首次较久)"
+    echo "第[14]步 localsend: 局域网传文件(AirDrop 替代)。官方 AppImage 解到 /home, 不占 rootfs;"
+    echo "         顺带放行防火墙 53317/tcp+udp —— 不放行会'装好了但搜不到对端'"
     echo "输入法: [2]步已于2026-09-24禁用(不动系统输入法); WorkBuddy 自身的 IME 适配见下"
     echo "WorkBuddy 输入法适配: WB_IME=wayland(默认,text-input-v1) | wayland3 | x11(退到XWayland,最稳)"
     echo "  若 WorkBuddy 不能输入: 依次试 WB_IME=wayland3 / WB_IME=x11 重跑第[3]步"
@@ -364,6 +385,7 @@ step_label() {
         setup_gpu)      echo "11 GPU 加速建议(DLSS/FSR)" ;;
         setup_selfheal) echo "12 升级后自愈服务" ;;
         setup_wiliwili) echo "13 wiliwili(B站客户端)" ;;
+        setup_localsend) echo "14 LocalSend(局域网传文件)" ;;
         *)              echo "$1" ;;
     esac
 }
@@ -404,6 +426,12 @@ verify_step() {
                         [ -f /etc/sudoers.d/steamos-self-heal ] ;;
         # flatpak --user 的应用目录在 /home, 原子升级幸存; 名字含 wiliwili 即算达标
         setup_wiliwili) compgen -G "$REAL_HOME/.local/share/flatpak/app/*wiliwili*" >/dev/null ;;
+        # LocalSend: 程序在 /home(幸存), 但**防火墙规则在 /etc(升级必被冲)** ——
+        # 两处都要判, 否则"程序还在但搜不到对端"会被误判成完好而跳过重建。
+        setup_localsend) [ -x "$REAL_HOME/.local/bin/localsend" ] && \
+                         [ -e "$REAL_HOME/.local/opt/localsend/app/AppRun" ] && \
+                         { ! command -v firewall-cmd >/dev/null 2>&1 || \
+                           grep -rqs '53317' /etc/firewalld 2>/dev/null; } ;;
         clean_rootfs)  return 0 ;;
         *)             return 0 ;;
     esac
@@ -736,7 +764,7 @@ clean_rootfs() {
 #     仅是让 Electron 走原生 Wayland 的无害加固(非必需), 与 setup_im 配合使用。
 # ===========================================================================
 setup_wb() {
-    step "[3/7] WorkBuddy (AUR 包, 最可靠能打中文)"
+    step "[3/14] WorkBuddy (AUR 包, 最可靠能打中文)"
     prepare "$@"
 
     # ── rootfs 空间预检 ──
@@ -964,6 +992,30 @@ setup_wb() {
         fi
     else
         warn "未找到 $WRAPPER(AUR 安装可能异常), 跳过 IME 修复"
+    fi
+
+    # ── 把"会被原子升级冲掉"的部分搬进 /home(入口 + electron 运行时) ──
+    #    升级会整块换 rootfs: /usr/bin/workbuddy 和 /usr 里的 electron 都没了,
+    #    而 /opt/WorkBuddy 主体因 /opt 被 offload 到 /home 分区而幸存 —— 结果是
+    #    "主体在、没有运行时和入口", 看起来像被整个冲掉。本步把这两样搬进 /home,
+    #    之后原子升级完 WorkBuddy 直接可用。详见 install-workbuddy-home.sh 头部。
+    local WB_SELF="$REAL_HOME/.local/opt/wb-electron"
+    local WB_ENTRY="$REAL_HOME/.local/bin/workbuddy"
+    if [ -x "$WB_SELF/electron" ] && [ -x "$WB_ENTRY" ]; then
+        info "WorkBuddy 已 /home 自持化(入口+运行时都在 /home) → 扛原子升级"
+    else
+        local WB_HOME_INST
+        WB_HOME_INST="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/install-workbuddy-home.sh"
+        if [ -f "$WB_HOME_INST" ]; then
+            sub "安装 WorkBuddy /home 自持形态(自带 electron 运行时 + 入口, 一次性)..."
+            if bash "$WB_HOME_INST"; then
+                info "自持化完成: 原子升级后无需重装即可启动"
+            else
+                warn "自持化未完成(不影响本次正常使用); 可稍后单独跑: bash install-workbuddy-home.sh"
+            fi
+        else
+            warn "找不到 install-workbuddy-home.sh, 跳过 /home 自持化"
+        fi
     fi
 
     cat <<EOF
@@ -1361,11 +1413,12 @@ setup_decky() {
 
     if [ "$NEED_DL" -eq 1 ]; then
         # 版本查询: 直连 GitHub API 在境内常失败 → 依次试镜像 API
+        # ⚠ 实测(2026-09-24) ghfast.top / ghproxy.net 对 api.github.com 一律 403
+        #   (它们只代理下载路径), 故只保留真正可用的 gh-proxy。
         sub "查询 Decky 最新版本(GitHub)..."
         local REL VERSION DLURL
         REL=""
-        for api in "https://api.github.com" "https://ghfast.top/https://api.github.com" \
-                   "https://gh-proxy.com/https://api.github.com"; do
+        for api in "https://api.github.com" "https://gh-proxy.com/https://api.github.com"; do
             REL="$(curl -fsS --connect-timeout 10 --max-time 30 "$api/repos/SteamDeckHomebrew/decky-loader/releases?per_page=20" 2>/dev/null)" \
                 && [ -n "$REL" ] && break
         done
@@ -1790,7 +1843,7 @@ setup_games() {
     # --- 2) 探测游戏本体 ---
     echo
     step "游戏本体检测"
-    local GAME_DIR="${GAME_DIR:-/home/deck/Downloads}"
+    local GAME_DIR="${GAME_DIR:-$REAL_HOME/Downloads}"
     # SteamOS deck 下载目录通常是 ~/Downloads 或 ~/下载
     if [ -d "$REAL_HOME/下载" ]; then GAME_DIR="$REAL_HOME/下载"; fi
     for g in "Wuthering Waves" "Hypergryph Launcher"; do
@@ -2391,7 +2444,7 @@ EOF
 #  下载走 gh 镜像优先(与 Decky 同套路)。
 # ===========================================================================
 setup_wiliwili() {
-    step "[13/13] wiliwili (B站客户端)"
+    step "[13/14] wiliwili (B站客户端)"
     prepare "$@"
 
     # flatpak 本体(SteamOS 自带; 其它 Arch 需补装)
@@ -2409,9 +2462,7 @@ setup_wiliwili() {
 
     sub "查询最新版本..."
     local TAG
-    TAG="$(curl -sL --connect-timeout 8 --max-time 25 \
-        "https://api.github.com/repos/xfangfang/wiliwili/releases/latest" 2>/dev/null \
-        | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    TAG="$(gh_latest_tag xfangfang/wiliwili)"
     [ -n "$TAG" ] || TAG="v1.6.0"    # API 不通时的已知兜底版本
     info "目标版本: $TAG"
 
@@ -2439,6 +2490,195 @@ setup_wiliwili() {
     chown -R "$REAL_USER:$REAL_GROUP" "$REAL_HOME/.local/share/flatpak" 2>/dev/null || true
     info "已安装 wiliwili(flatpak 用户级)。桌面应用列表搜 wiliwili;"
     echo "  游戏模式如需入口: Steam → 添加非Steam游戏 → 浏览 flatpak 应用"
+}
+
+# ===========================================================================
+#  [14] LocalSend —— 局域网传文件(AirDrop 替代品)
+# ---------------------------------------------------------------------------
+#  官方 Linux 发三种产物(tar.gz / AppImage / deb), 这里取 **AppImage 解到 /home**:
+#    - tar.gz 依赖系统 gtk3(+ appindicator), deb 还要更多系统库 —— 在 SteamOS 上
+#      要么根本装不了, 要么得往 rootfs 塞库, 而 rootfs 会被原子升级整块换掉。
+#    - AppImage 自带 GTK 运行时 → 解到 /home(p8) 永久幸存, 零 rootfs 开销。
+#  入口与 dsh 桌面版同思路: 有 libfuse2 就直接跑 AppImage, 否则跑解压树(免 FUSE)。
+#
+#  ⚠️ "装好了却搜不到对端" ≠ 装失败 —— 那是防火墙没放行:
+#     53317/tcp 传输 + 53317/udp 组播发现, SteamOS 默认 firewalld 会挡。
+#     放行规则落在 /etc(原子升级必被冲), 故已登记进 self-heal-after-upgrade.sh
+#     的 CHECKS(fwport 项): 升级后由 step[12] 自愈服务自动重建, 不必手工补。
+# ===========================================================================
+setup_localsend() {
+    step "[14/14] LocalSend (局域网传文件)"
+    prepare "$@"
+
+    local LS="$REAL_HOME/.local/opt/localsend"
+    local IMG="$LS/LocalSend.AppImage" APP="$LS/app" PREV="$LS.prev"
+    local ENTRY="$REAL_HOME/.local/bin/localsend"
+    local DESK="$REAL_HOME/.local/share/applications/localsend.desktop"
+    local ICON="$REAL_HOME/.local/share/icons/localsend.png"
+    local CACHE="$REAL_HOME/.cache/localsend"
+
+    # ── 版本 ──
+    sub "查询最新版本..."
+    local TAG VER
+    TAG="$(gh_latest_tag localsend/localsend)"
+    [ -n "$TAG" ] || TAG="v1.18.2"          # API 不通时的已知兜底版本
+    VER="${TAG#v}"
+    info "目标版本: $TAG"
+
+    local BASE="LocalSend-${VER}-linux-x86-64.AppImage"
+    local DLURL="https://github.com/localsend/localsend/releases/download/$TAG/$BASE"
+    local ARCHIVE="$CACHE/$BASE"
+
+    # ── 程序本体: 已就位且版本一致就跳过下载(重跑本步 = 更新) ──
+    if [ "${FORCE:-0}" -ne 1 ] && [ -e "$APP/AppRun" ] && \
+       [ "$(cat "$LS/.version" 2>/dev/null)" = "$VER" ]; then
+        info "LocalSend $VER 已就位, 跳过下载(FORCE=1 可强制重装)"
+    else
+        mkdir -p "$CACHE"
+        if [ -s "$ARCHIVE" ]; then
+            info "已有缓存包($(du -h "$ARCHIVE" 2>/dev/null | cut -f1)), 直接用"
+        else
+            sub "下载 $BASE (约 63MB, 镜像优先)..."
+            local ok=0 u
+            for prefix in "https://ghfast.top/" "https://gh-proxy.com/" "https://ghproxy.net/" ""; do
+                u="${prefix}${DLURL}"
+                sub "尝试: $(printf '%s' "$u" | cut -c1-78)"
+                url_reachable "$u" || { sub "  探活失败, 换源"; continue; }
+                if curl -fL --http1.1 --connect-timeout 10 --max-time 900 -C - \
+                        "$u" -o "$ARCHIVE" 2>/dev/null && [ -s "$ARCHIVE" ]; then
+                    ok=1; info "  已下载 $(du -h "$ARCHIVE" 2>/dev/null | cut -f1)"; break
+                fi
+                sub "  下载失败, 换源"
+            done
+            [ "$ok" -eq 1 ] || { err "全部源下载失败: $DLURL"; return 1; }
+        fi
+        chmod +x "$ARCHIVE" 2>/dev/null || true
+
+        # ── 解压(--appimage-extract 是 AppImage 自带能力, 不需要 FUSE) ──
+        local STAGE="$CACHE/.stage.$$"
+        rm -rf "$STAGE"; mkdir -p "$STAGE"
+        sub "解压 AppImage..."
+        if ! ( cd "$STAGE" && "$ARCHIVE" --appimage-extract >/dev/null 2>&1 ); then
+            err "解压失败(多半是下载不完整)"
+            sub "删掉缓存重跑: rm -f \"$ARCHIVE\""
+            rm -rf "$STAGE"; return 1
+        fi
+        if [ ! -e "$STAGE/squashfs-root/AppRun" ]; then
+            err "包结构异常: 解压树里没有 AppRun"
+            rm -rf "$STAGE"; return 1
+        fi
+        chmod +x "$STAGE/squashfs-root/AppRun" 2>/dev/null || true
+        info "解压校验通过"
+
+        # ── 原子替换(留 .prev 回滚) ──
+        mkdir -p "$LS"
+        if [ -d "$APP" ]; then
+            rm -rf "$PREV"
+            mv "$APP" "$PREV" || { err "备份旧版本失败"; rm -rf "$STAGE"; return 1; }
+        fi
+        if ! mv "$STAGE/squashfs-root" "$APP"; then
+            err "放入新版本失败, 回滚"
+            [ -d "$PREV" ] && mv "$PREV" "$APP"
+            rm -rf "$STAGE"; return 1
+        fi
+        rm -rf "$STAGE"
+        # AppImage 原文件也留在旁边: 有 FUSE 时直接跑它, 省一次解压树启动开销
+        mv -f "$ARCHIVE" "$IMG" 2>/dev/null || cp -f "$ARCHIVE" "$IMG" 2>/dev/null || true
+        printf '%s\n' "$VER" > "$LS/.version"
+        info "程序就位: $APP (v$VER)"
+    fi
+
+    # ── 入口(有 libfuse2 就直跑 AppImage, 否则跑解压树) ──
+    mkdir -p "$REAL_HOME/.local/bin"
+    cat > "$ENTRY" <<EOF
+#!/usr/bin/env bash
+# 由 steamos-setup.sh 步骤[14] 生成 —— 不要手改(重跑该步会覆盖)
+# 优先直接跑 AppImage; 没有 libfuse2 就退回解压树(免 FUSE 依赖)。
+# 强制方式: LOCALSEND_MODE=appimage|extract
+IMG="$IMG"
+APPDIR="$APP"
+case "\${LOCALSEND_MODE:-auto}" in
+  appimage) exec "\$IMG" "\$@" ;;
+  extract)  exec "\$APPDIR/AppRun" "\$@" ;;
+esac
+if [ -e /dev/fuse ] && command -v ldconfig >/dev/null 2>&1 \\
+   && ldconfig -p 2>/dev/null | grep -q "libfuse\\.so\\.2"; then
+  exec "\$IMG" "\$@"
+fi
+exec "\$APPDIR/AppRun" "\$@"
+EOF
+    chmod 755 "$ENTRY"
+    bash -n "$ENTRY" 2>/dev/null && info "入口就绪: $ENTRY" || warn "入口语法异常(见 $ENTRY)"
+
+    # ── 桌面项 + 图标(字段照搬包内 .desktop, 不自己编) ──
+    local bdesk name="LocalSend" comment="局域网文件互传" wm="LocalSend" cats="Utility;Network;FileTransfer;"
+    bdesk="$(find "$APP" -maxdepth 4 -name '*.desktop' 2>/dev/null | head -1)"
+    if [ -n "$bdesk" ]; then
+        local t
+        t="$(sed -n 's/^Name=//p' "$bdesk" | head -1)";           [ -n "$t" ] && name="$t"
+        t="$(sed -n 's/^Comment=//p' "$bdesk" | head -1)";        [ -n "$t" ] && comment="$t"
+        t="$(sed -n 's/^StartupWMClass=//p' "$bdesk" | head -1)"; [ -n "$t" ] && wm="$t"
+        t="$(sed -n 's/^Categories=//p' "$bdesk" | head -1)";     [ -n "$t" ] && cats="$t"
+    fi
+    case "$cats" in *';') ;; *) cats="$cats;" ;; esac     # Categories 必须以 ; 结尾
+
+    local icand=""
+    icand="$(ls -1 "$APP"/usr/share/icons/hicolor/512x512/apps/*.png 2>/dev/null | head -1)"
+    if [ -z "$icand" ]; then
+        icand="$(ls -1 "$APP"/usr/share/icons/hicolor/*/apps/*.png 2>/dev/null | sort -V | tail -1)"
+    fi
+    if [ -z "$icand" ] && [ -e "$APP/.DirIcon" ]; then
+        icand="$APP/.DirIcon"
+    fi
+    # 官方便携包是纯 Flutter 布局(顶层只有 data/ lib/ localsend_app), 不含
+    # FHS 图标; 兜底用它的 Flutter 资源图 —— 这条路径实测存在于官方 tar.gz/AppImage。
+    if [ -z "$icand" ]; then
+        icand="$(ls -1 "$APP"/data/flutter_assets/assets/img/logo-512.png 2>/dev/null | head -1)"
+    fi
+    mkdir -p "$(dirname "$ICON")" "$(dirname "$DESK")"
+    if [ -n "$icand" ] && [ -f "$icand" ]; then
+        cp -f "$icand" "$ICON" && info "图标已搬到 /home(升级后菜单里不会丢图标)"
+    else
+        warn "包里没找到图标, 菜单项将无图标"
+    fi
+    cat > "$DESK" <<EOF
+[Desktop Entry]
+Type=Application
+Name=$name
+Comment=$comment
+Exec=$ENTRY %u
+Icon=$ICON
+Terminal=false
+Categories=$cats
+StartupWMClass=$wm
+StartupNotify=true
+EOF
+    chmod 644 "$DESK"
+    chown -R "$REAL_USER:$REAL_GROUP" "$LS" 2>/dev/null || true
+    chown "$REAL_USER:$REAL_GROUP" "$ENTRY" "$DESK" "$ICON" 2>/dev/null || true
+    info "桌面项就绪(应用列表搜 LocalSend; 命令行 $ENTRY)"
+
+    # ── 防火墙: 能互相"发现"的关键(装好了搜不到对端就是这里没放行) ──
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        if grep -rqs '53317' /etc/firewalld 2>/dev/null; then
+            info "防火墙已放行 53317(组播发现 + 传输)"
+        else
+            sub "放行 53317/tcp + 53317/udp(firewalld)..."
+            firewall-cmd --permanent --add-port=53317/tcp --add-port=53317/udp >/dev/null 2>&1 \
+                && info "已放行(permanent)" \
+                || warn "放行失败; 手工执行: firewall-cmd --permanent --add-port=53317/tcp --add-port=53317/udp"
+        fi
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    else
+        warn "未检测到 firewalld —— 若另有 ufw/nftables, 请自行放行 53317/tcp+udp"
+    fi
+
+    cat <<EOF
+  ${C_WARN}完成!${C_R} 应用列表搜 LocalSend(命令行: $ENTRY)
+  自检: 两台设备都开着 LocalSend 应能互相发现。
+  搜不到对端 = 防火墙没放行 53317(不是装失败), 本步已自动放行并登记进自愈清单。
+  原子升级后: 程序在 /home 不会丢; 防火墙规则会被冲, 由 step[12] 自愈服务自动重建。
+EOF
 }
 
 
@@ -2619,6 +2859,7 @@ map_step() {
         11|gpu|dlss|fsr|upscale|显卡) echo setup_gpu ;;
         12|selfheal|heal|自愈) echo setup_selfheal ;;
         13|wiliwili|bili|bilibili) echo setup_wiliwili ;;
+        14|localsend|ls|传文件|lanshare) echo setup_localsend ;;
         *) echo "" ;;
     esac
 }
@@ -2632,7 +2873,7 @@ adopt_state() {
     echo "  判据: 各步骤的落地复核(文件/包/systemd unit 是否真实存在)"
     echo
     local fn adopted=0 pending=0
-    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili; do
+    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend; do
         if verify_step "$fn"; then
             state_mark "$fn"
             info "[认领] $(step_label "$fn") —— 已达标"
@@ -2677,7 +2918,7 @@ done
 #      多跑几个"其实没坏"的步骤只是多几次判空, 代价远小于漏恢复一项;
 #   ③ 以后新增步骤(如 [13])自动纳入恢复范围, 不用记得回来补两处。
 # AFTER_UPGRADE 只用于: 版本变化提示 + rootfs 空间预检。
-[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili)
+[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend)
 
 if [ "$DO_RESET" -eq 1 ]; then
     state_reset
