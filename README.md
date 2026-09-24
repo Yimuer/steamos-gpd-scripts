@@ -117,7 +117,9 @@ bash verify-upstreams.sh   # 发布前/重装前跑：一次探完所有外部�
 ```
 steamos-setup.sh         主脚本(唯一必需, 自包含; 步骤 1~14)
 可选组件安装.sh           可选项菜单(微信/Firefox/dsh 桌面版/WPS/鸿蒙字体)
-install-*-home.sh        各应用的"装进 /home 或 /opt"独立脚本(单文件可独立拷贝)
+install-app-home.sh      单引擎: firefox-nightly / dsh-desktop / wps-office 三个"下载便携包"安装器
+install-workbuddy-home.sh   WorkBuddy 的 /home 自持化(不并入引擎: 它不下载产物)
+install-harmony-sans-home.sh  鸿蒙字体装成系统字体(装 /home, 扛原子升级)
 self-heal-after-upgrade.sh  开机自愈钩子(由步骤 12 部署在 /home)
 check.sh / verify-upstreams.sh   自检 / 上游体检
 steamos-nix/             探路分支(已冻结, 主线不依赖; 详见下节)
