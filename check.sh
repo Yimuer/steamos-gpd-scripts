@@ -221,6 +221,37 @@ if [ -f 重装后先运行我.desktop ]; then
 else
     bad "重装后先运行我.desktop 缺失(重装后没有双击入口)"
 fi
+# 2.14 步骤[15] markdown 阅读器(glow)
+grep -q '^setup_mdread() {' "$S" \
+    && pass "步骤[15] setup_mdread 存在" \
+    || bad "步骤[15] setup_mdread 缺失"
+grep -q '15|mdread' "$S" \
+    && pass "map_step 已认 mdread(可 sudo bash steamos-setup.sh 15)" \
+    || bad "map_step 未接 mdread —— 步骤号参数无法直达"
+grep -q 'setup_localsend setup_mdread' "$S" \
+    && pass "FUNCS 已含步骤[15](两处列表都加了)" \
+    || bad "FUNCS 漏了 setup_mdread —— 跑全量时会跳过这一步"
+grep -q 'BIN="\$REAL_HOME/.local/bin/glow"' "$S" \
+    && pass "glow 装进 /home(不占 rootfs、扛原子升级)" \
+    || bad "glow 落点被改 —— 那就不如直接用 Arch 包了, 但那个进 rootfs 会被升级冲掉"
+# 桌面项两条规矩(与启动器同源: Terminal=true 别硬写终端; 不写 TryExec)
+grep -q 'glow-markdown.desktop' "$S" \
+    && pass "glow 注册了 .md 文件关联(双击可看)" \
+    || bad "没注册 .md 关联 —— 那就只是个命令行工具, 不算'阅读器'"
+# ── 新不变量: 步骤横幅里的"总数"必须等于最大步骤号 ──
+#    加步骤时最容易漏的就是这个(历史上出现过 /7 /9 /10 /11 /12 /14 并存)。
+#    注意分母不等于 FUNCS 的元素个数: 步骤8(rootfs 瘦身)是**步骤3 里按需触发的子步骤**
+#    (空间不够才自动跑, ROOTFS_NOCLEAN=1 可关), 不在全量顺序列表里 → 所以按"最大步骤号"比。
+max_step="$(grep -oE '^ +setup_[a-z_]+\) +echo "[0-9]+|^ +clean_rootfs\) +echo "[0-9]+' "$S" 2>/dev/null \
+            | grep -oE '[0-9]+' | sort -n | tail -1)"
+dens="$(grep -oE 'step "\[[0-9]+/[0-9]+\]' "$S" 2>/dev/null | grep -oE '/[0-9]+' | tr -d '/' | sort -u | tr '\n' ' ')"
+if [ -n "$max_step" ]; then
+    if [ "$(printf '%s' "$dens" | wc -w)" -eq 1 ] && [ "$(printf '%s' "$dens" | tr -d ' ')" = "$max_step" ]; then
+        pass "步骤横幅总数一致(全部 /$max_step)"
+    else
+        bad "步骤横幅总数不一致: 最大步骤号是 $max_step, 横幅里出现的是 [$(printf '%s' "$dens" | sed 's/ $//')]"
+    fi
+fi
 
 echo "════════ 3) shellcheck (可选, 未安装则跳过) ════════"
 # 找 shellcheck: 先在 PATH 里找, 再找本目录 tools/ 下的(shellcheck 或 shellcheck.exe)

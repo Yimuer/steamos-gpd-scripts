@@ -38,7 +38,8 @@ Steam 游戏启动工具、dsh 安装逻辑等全部内容(完全自包含)。
        bash steamos-setup.sh 11   # GPU 加速建议(DLSS/FSR/XeSS, 按显卡自动提示)
        bash steamos-setup.sh 12   # 升级后自愈服务(开机自动重建被系统升级冲掉的配置)
        bash steamos-setup.sh 13   # wiliwili (B站客户端, flatpak 用户级)
-       bash steamos-setup.sh 14   # LocalSend (局域网传文件; 附带放行防火墙 53317)
+         bash steamos-setup.sh 14   # LocalSend (局域网传文件; 附带放行防火墙 53317)
+         bash steamos-setup.sh 15   # markdown 阅读器 glow (静态二进制落 /home; 顺带注册 .md 双击打开)
   3) 或一次全量:  bash steamos-setup.sh
   4) 复查:        bash steamos-setup.sh --status
 
