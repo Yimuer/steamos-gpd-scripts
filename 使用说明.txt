@@ -7,7 +7,10 @@
    改脚本前请看 SCRIPT-MAINTENANCE.md。
 
 ★★★ 重装系统的完整操作流程请看【重装流程.md】(一页纸, 从U盘到验收) ★★★
-★★★ 双击【重装后先运行我】即可开始重建环境(断点续传, 中断可重来)    ★★★
+★★★ 最稳的启动方式: 在 Konsole 里跑一行 ★★★
+     cd ~/Downloads/steamos-reinstall-backup && chmod +x *.sh *.desktop && bash 重装后先运行我.sh
+     (从 Windows/网盘/U盘 拷回来的文件会丢执行位, 表现就是"双击没反应"; 先 chmod 一次)
+★★★ 或双击【重装后先运行我】(一键重建环境, 断点续传, 中断可重来)            ★★★
 
 【本备份包用途】
 重装 SteamOS(或 Arch 系)后, 在无 AI 辅助的环境下重建开发环境。

@@ -194,6 +194,33 @@ if [ -f install-nextkde-home.sh ]; then
 else
     bad "install-nextkde-home.sh 缺失"
 fi
+# 2.13 启动器: 执行位 + 薄壳约束
+#      —— "双击没反应"最常见的原因就是执行位丢了(.desktop 必须可执行 Dolphin 才肯跑),
+#         而 TryExec 写终端会让没装该终端的机器上整个入口消失。
+#      只在 git 仓库里查执行位(备份包可能是纯文件拷贝, 没有 .git)
+if [ -d .git ]; then
+    for f in steamos-setup.sh 可选组件安装.sh 重装后先运行我.sh; do
+        [ -f "$f" ] || { bad "$f 缺失"; continue; }
+        [ "$(git ls-files -s -- "$f" 2>/dev/null | awk '{print $1}')" = "100755" ] \
+            && pass "$f 在 git 里可执行(100755)" \
+            || bad "$f 在 git 里不是 100755 —— 拷到 Linux 后会直接运行失败"
+    done
+    if [ -f 重装后先运行我.desktop ]; then
+        [ "$(git ls-files -s -- 重装后先运行我.desktop 2>/dev/null | awk '{print $1}')" = "100755" ] \
+            && pass "启动器 .desktop 在 git 里可执行(否则 Dolphin 双击静默无反应)" \
+            || bad "启动器 .desktop 不是 100755 —— 双击会没反应"
+    fi
+fi
+if [ -f 重装后先运行我.desktop ]; then
+    grep -q '^TryExec=' 重装后先运行我.desktop \
+        && bad "启动器写了 TryExec —— 该程序不存在时整个入口会消失(找不到就别卡它)" \
+        || pass "启动器没写 TryExec(不会因缺终端而整个入口消失)"
+    grep -q '重装后先运行我\.sh' 重装后先运行我.desktop \
+        && pass "启动器是薄壳(调 重装后先运行我.sh, 逻辑只写一份)" \
+        || bad "启动器没调 重装后先运行我.sh —— 同一套逻辑会重复两份"
+else
+    bad "重装后先运行我.desktop 缺失(重装后没有双击入口)"
+fi
 
 echo "════════ 3) shellcheck (可选, 未安装则跳过) ════════"
 # 找 shellcheck: 先在 PATH 里找, 再找本目录 tools/ 下的(shellcheck 或 shellcheck.exe)
