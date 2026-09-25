@@ -70,7 +70,7 @@ echo "════════ 上游依赖体检  $(date '+%F %T') ════
 # ── 1. GitHub release API(脚本查版本用) ────────────────────────────────
 head_ "① GitHub release API"
 for repo in localsend/localsend dsh-tauri/deepseek-harness-desktop \
-            xfangfang/wiliwili SteamDeckHomebrew/decky-loader; do
+            xfangfang/wiliwili SteamDeckHomebrew/decky-loader charmbracelet/glow; do
     t="$(gh_tag "$repo")"
     if [ -n "$t" ]; then pass "$repo" "最新 $t"
     else fail "$repo" "取不到 tag(API 不通?)"; CRIT_FAIL=1; fi
@@ -126,6 +126,10 @@ probe "WPS 老通道(仅 ≤11.x 有效, 可选)" \
 WTAG="$(gh_tag xfangfang/wiliwili)"; WTAG="${WTAG:-v1.6.0}"
 probe_gh "wiliwili flatpak 包 $WTAG" \
       "https://github.com/xfangfang/wiliwili/releases/download/$WTAG/wiliwili-Linux-x86_64.flatpak"
+
+GTAG="$(gh_tag charmbracelet/glow)"; GTAG="${GTAG:-v3.0.0}"
+probe_gh "glow(markdown 阅读器) $GTAG" \
+      "https://github.com/charmbracelet/glow/releases/download/$GTAG/glow_${GTAG#v}_Linux_x86_64.tar.gz"
 
 # NextKde: 只发源码、不发 release, 所以探的是"上游安装器还在不在原路径"
 # (install-nextkde-home.sh 依赖 tools/kosctl; 上游改结构就会失效)

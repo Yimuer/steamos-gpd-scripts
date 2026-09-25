@@ -62,7 +62,7 @@ sudo bash steamos-setup.sh --after-upgrade
 
 ---
 
-## 三、必装主线（14 步）
+## 三、必装主线（15 步）
 
 | 步 | 内容 |
 |---|---|
@@ -79,6 +79,8 @@ sudo bash steamos-setup.sh --after-upgrade
 | 11 | GPU 加速建议（DLSS / FSR / XeSS，按显卡提示） |
 | 12 | **升级后自愈服务**（开机自动重建被升级冲掉的 `/etc` 配置） |
 | 13 | wiliwili（B 站客户端，flatpak 用户级） |
+| 14 | LocalSend（局域网传文件；**附带放行防火墙 53317**） |
+| 15 | markdown 阅读器 glow（**单个静态二进制** → `~/.local/bin`；顺带注册 `.md` 双击打开） |
 | 14 | LocalSend（局域网传文件；**附带放行防火墙 53317**） |
 
 ## 四、可选组件（`bash 可选组件安装.sh`）

@@ -48,6 +48,7 @@
 | `12`/`selfheal` | `setup_selfheal()` | 升级后自愈服务（user 服务在 /home + sudoers 在 /etc） |
 | `13`/`wiliwili` | `setup_wiliwili()` | B站客户端（flatpak `--user`，落 /home） |
 | `14`/`localsend` | `setup_localsend()` | **LocalSend 局域网传文件**（官方 AppImage 解到 /home + 放行防火墙 53317） |
+| `15`/`mdread` | `setup_mdread()` | **markdown 阅读器 glow**（单个静态二进制 → `~/.local/bin`，不占 rootfs；顺带注册 `.md` 双击打开） |
 
 辅助函数：`url_reachable()`（下载探活）、`homedir()`、`state_*`（断点续传）、
 `verify_step()`（落地复核）、`step_label()`、`map_step()`（参数→函数）、`show_status()`、
@@ -83,7 +84,7 @@
 
 ### 1.3 可选组件安装器：新增一个可选项怎么做
 
-`可选组件安装.sh` 是 menu-driven 的独立脚本（`sudo -E` 自提权，**不属** 14 步主线）。
+`可选组件安装.sh` 是 menu-driven 的独立脚本（`sudo -E` 自提权，**不属** 15 步主线）。
 新增条目**只改三处**，不要散落逻辑：
 
   1. 写 `install_xxx()` —— 逻辑重的话就 call 独立脚本（如 `install_firefox_nightly`
@@ -872,6 +873,7 @@ state 里没记录的（从没装过的，比如 dsh）不会趁机新装 ——
 | `[12]` 自愈服务 | 服务在 `/home`，sudoers 在 `/etc` | 部分 | 🔧 重建 sudoers |
 | `[13]` wiliwili | flatpak `--user` → `/home` | ✅ 幸存 | ⏭ 跳过 |
 | `[14]` LocalSend | 程序在 `/home`（`~/.local/opt/localsend`）；**防火墙规则在 `/etc/firewalld`** | 部分 | 🔧 重建（`verify_step` 双判据会把"程序在但搜不到对端"识别为待重建；也挂进了自愈清单） |
+| `[15]` glow | 二进制与 `.desktop` 都在 `/home`（`~/.local/bin` + `~/.local/share/applications`） | ✅ 幸存 | ⏭ 跳过（**选它就是因为它只依赖 glibc** —— 那些 GUI 阅读器要把 Qt/GTK 装进 rootfs，升级必被冲） |
 
 **幸存不需要管的**：游戏本体、Proton（GE/DW）、Steam 前缀 `compatdata`、
 Decky 插件与其配置、非 Steam 快捷方式、dconf 输入法配置、脚本进度文件。

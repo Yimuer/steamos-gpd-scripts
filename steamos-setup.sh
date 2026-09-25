@@ -37,6 +37,9 @@
 #   [12] 升级后自愈服务: 开机版本钩子, 自动检测并重建被原子更新冲掉的配置
 #   [13] wiliwili: B站第三方客户端(flatpak 用户级安装, 原子升级不冲)
 #   [14] LocalSend: 局域网传文件(官方 AppImage 解到 /home; 附带放行防火墙 53317)
+#   [15] markdown 阅读器: glow(单个静态二进制落 ~/.local/bin; 顺带注册 .md 双击打开)
+#        —— 为什么不用 marker/ghostwriter 那些 GUI: 它们要把 Qt/GTK 运行时装进 rootfs,
+#           原子升级会被冲; glow 只依赖 glibc, 放 /home 就永久幸存。
 #
 #  用法:
 #    bash steamos-setup.sh            全量(0→9); 已成功的步骤会自动跳过
@@ -325,7 +328,7 @@ device_profile
 show_help() {
     awk 'NR==1 {next} { if ($0 !~ /^#/) exit; sub(/^#+ ?/, ""); print }' "$0"
     echo
-    echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端  14/localsend=局域网传文件"
+      echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端  14/localsend=局域网传文件  15/mdread=markdown阅读器(glow)"
     echo "设备画像: --device 只检测本机机型(免root): AMD掌机/AMD台式/Intel掌机/Intel+N卡台式"
     echo "断点续传: 直接重跑即可(已完好的步骤自动跳过, 被系统升级冲掉的会自动重建)"
     echo "         --reset 清进度; FORCE=1 或 --force 强制重跑"
@@ -339,8 +342,10 @@ show_help() {
     echo "         本步放一个 user 服务在 /home, 开机自动重建被冲掉的背键/inputplumber/NTP/IME)"
     echo "         (非 systemd / /etc 只读的环境会被拦下, 确认环境无误可 SKIP_ENV_CHECK=1)"
     echo "第[13]步 wiliwili: B站第三方客户端(flatpak 用户级; 运行时走 flathub, 首次较久)"
-    echo "第[14]步 localsend: 局域网传文件(AirDrop 替代)。官方 AppImage 解到 /home, 不占 rootfs;"
-    echo "         顺带放行防火墙 53317/tcp+udp —— 不放行会'装好了但搜不到对端'"
+      echo "第[14]步 localsend: 局域网传文件(AirDrop 替代)。官方 AppImage 解到 /home, 不占 rootfs;"
+      echo "         顺带放行防火墙 53317/tcp+udp —— 不放行会'装好了但搜不到对端'"
+      echo "第[15]步 mdread: markdown 阅读器 glow(单个静态二进制 → ~/.local/bin, 不占 rootfs、扛升级);"
+      echo "         顺带注册 .md 的文件关联, 双击就能在终端里渲染出来"
     echo "输入法: [2]步已于2026-09-24禁用(不动系统输入法); WorkBuddy 自身的 IME 适配见下"
     echo "WorkBuddy 输入法适配: WB_IME=wayland(默认,text-input-v1) | wayland3 | x11(退到XWayland,最稳)"
     echo "  若 WorkBuddy 不能输入: 依次试 WB_IME=wayland3 / WB_IME=x11 重跑第[3]步"
@@ -392,6 +397,7 @@ step_label() {
         setup_selfheal) echo "12 升级后自愈服务" ;;
         setup_wiliwili) echo "13 wiliwili(B站客户端)" ;;
         setup_localsend) echo "14 LocalSend(局域网传文件)" ;;
+        setup_mdread)   echo "15 markdown 阅读器(glow)" ;;
         *)              echo "$1" ;;
     esac
 }
@@ -438,6 +444,9 @@ verify_step() {
                          [ -e "$REAL_HOME/.local/opt/localsend/app/AppRun" ] && \
                          { ! command -v firewall-cmd >/dev/null 2>&1 || \
                            grep -rqs '53317' /etc/firewalld 2>/dev/null; } ;;
+        # glow: 二进制与桌面项都在 /home(两处都判 —— 只有二进制时双击 .md 不会走它)
+        setup_mdread)  [ -x "$REAL_HOME/.local/bin/glow" ] && \
+                       [ -f "$REAL_HOME/.local/share/applications/glow-markdown.desktop" ] ;;
         clean_rootfs)  return 0 ;;
         *)             return 0 ;;
     esac
@@ -638,7 +647,7 @@ PYEOF
 #  [1] archlinuxcn 源
 # ===========================================================================
 setup_cn() {
-    step "[1/7] archlinuxcn 软件源"
+    step "[1/15] archlinuxcn 软件源"
     prepare "$@"
     # 确保官方源存在(archlinuxcn 依赖它)
     if [ "$HAS_CORE" -eq 0 ] || [ "$HAS_EXTRA" -eq 0 ]; then
@@ -691,7 +700,7 @@ setup_cn() {
 #  全量运行 / 断点续传 / 落地复核 / --adopt 均正常工作。
 # ===========================================================================
 setup_im() {
-    step "[2/7] 输入法 —— 已禁用"
+    step "[2/15] 输入法 —— 已禁用"
     info "按 2026-09-24 要求跳过: 不改动系统输入法相关内容"
     return 0
 }
@@ -718,7 +727,7 @@ rootfs_report() {
 }
 
 clean_rootfs() {
-    step "[8] rootfs 瘦身"
+    step "[8/15] rootfs 瘦身"
     if [ "$(id -u)" -ne 0 ]; then
         warn "需要管理员权限(密码在终端输入), 重新以 sudo 运行..."
         exec sudo -E bash "$0" clean
@@ -770,7 +779,7 @@ clean_rootfs() {
 #     仅是让 Electron 走原生 Wayland 的无害加固(非必需), 与 setup_im 配合使用。
 # ===========================================================================
 setup_wb() {
-    step "[3/14] WorkBuddy (AUR 包, 最可靠能打中文)"
+    step "[3/15] WorkBuddy (AUR 包, 最可靠能打中文)"
     prepare "$@"
 
     # ── rootfs 空间预检 ──
@@ -1038,7 +1047,7 @@ EOF
 #  (守护进程 py 放 /home, /etc 只留 systemd unit + udev + inputplumber 配置)
 # ===========================================================================
 setup_backkey() {
-    step "[4/7] GPD Win5 背键 + InputPlumber(deck 手柄 / 背键 / Home / KB)"
+    step "[4/15] GPD Win5 背键 + InputPlumber(deck 手柄 / 背键 / Home / KB)"
     prepare "$@"
 
     # ── 设备检测: 换机型重装时自动跳过本步 ──
@@ -1391,7 +1400,7 @@ EOF
 #  [5] Decky Loader  (二进制在 /home/homebrew, /etc 只留小 unit)
 # ===========================================================================
 setup_decky() {
-    step "[5/7] Decky Loader"
+    step "[5/15] Decky Loader"
     prepare "$@"
 
     local SERVICE_NAME="plugin_loader"
@@ -1603,7 +1612,7 @@ install_decky_plugin() {
 #  设备检测: 仅 AMD/Intel APU; 有 NVIDIA 独显则跳过(插件明确不支持)。
 # ===========================================================================
 setup_tdp() {
-    step "[9/9] TDP 控制 (SimpleDeckyTDP 插件)"
+    step "[9/15] TDP 控制 (SimpleDeckyTDP 插件)"
     prepare "$@"
 
     local PLUGIN_DIR="$REAL_HOME/homebrew/plugins"
@@ -1788,7 +1797,7 @@ EOF
 #    再用下方写好的 python 写入启动选项。本体文件请用户自行备份放回。
 # ===========================================================================
 setup_games() {
-    step "[6/7] 游戏支持(GE-Proton + 鸣潮/终末地)"
+    step "[6/15] 游戏支持(GE-Proton + 鸣潮/终末地)"
     prepare "$@"
 
     local REPO="GloriousEggroll/proton-ge-custom"
@@ -2042,7 +2051,7 @@ EOF
 #  用法: dsh web(浏览器 Web UI, 127.0.0.1:3080) / dsh run "任务"
 # ===========================================================================
 setup_dsh() {
-    step "[7/7] DeepSeek Harness (dsh, 补充 AI CLI)"
+    step "[7/15] DeepSeek Harness (dsh, 补充 AI CLI)"
     prepare "$@"
 
     # 固定到已实测可用的版本(dev-preview 会破坏兼容, 不追 latest)
@@ -2173,7 +2182,7 @@ EOF
 #  副作用: 无。只改时间同步服务器, 不动 atomupd 本身。
 # ===========================================================================
 setup_ntp() {
-    step "[10/10] 换境内 NTP(加速开机)"
+    step "[10/15] 换境内 NTP(加速开机)"
     prepare "$@"
 
     # 可配置 NTP 服务器(空格分隔), 默认阿里 + 腾讯
@@ -2236,7 +2245,7 @@ EOF
 #      老 Intel 核显/独显可能回退软件模式。Linux 支持: kernel 6.18+/Mesa 25.3+。
 # ===========================================================================
 setup_gpu() {
-    step "[11/11] GPU 加速建议(DLSS/FSR)"
+    step "[11/15] GPU 加速建议(DLSS/FSR)"
     prepare "$@"
 
     detect_hw   # 刷新检测
@@ -2348,7 +2357,7 @@ EOF
 #  每次升级后重跑一次本步。这已是最优解(无法把 sudoers 放 /home, systemd 不认)。
 # ===========================================================================
 setup_selfheal() {
-    step "[12/12] 系统升级后自愈服务"
+    step "[12/15] 系统升级后自愈服务"
     prepare "$@"
 
     local SH_DIR="$REAL_HOME/.local/opt/steamos-self-heal"
@@ -2453,7 +2462,7 @@ EOF
 #  下载走 gh 镜像优先(与 Decky 同套路)。
 # ===========================================================================
 setup_wiliwili() {
-    step "[13/14] wiliwili (B站客户端)"
+    step "[13/15] wiliwili (B站客户端)"
     prepare "$@"
 
     # flatpak 本体(SteamOS 自带; 其它 Arch 需补装)
@@ -2516,7 +2525,7 @@ setup_wiliwili() {
 #     的 CHECKS(fwport 项): 升级后由 step[12] 自愈服务自动重建, 不必手工补。
 # ===========================================================================
 setup_localsend() {
-    step "[14/14] LocalSend (局域网传文件)"
+    step "[14/15] LocalSend (局域网传文件)"
     prepare "$@"
 
     local LS="$REAL_HOME/.local/opt/localsend"
@@ -2690,6 +2699,99 @@ EOF
 EOF
 }
 
+
+# ===========================================================================
+#  [15] markdown 阅读器 (glow)
+# ---------------------------------------------------------------------------
+#  为什么是 glow, 而不是 marker / ghostwriter / marknote 那些 GUI:
+#   Arch 官方 extra 里那几个都要把 Qt/GTK 运行时装进 **rootfs**, 原子升级会被冲掉;
+#   而 glow 的官方发布物是**单个静态二进制**(只依赖 glibc), 直接落 ~/.local/bin
+#   就永久幸存 —— 与本项目"能放 /home 就放 /home"的铁律一致。
+#   顺带的好处: 它能在终端里把 markdown 渲染成带样式的样子, 还能当分页器用。
+setup_mdread() {
+    step "[15/15] markdown 阅读器 (glow)"
+    local BIN="$REAL_HOME/.local/bin/glow"
+    local DESK="$REAL_HOME/.local/share/applications/glow-markdown.desktop"
+    local CACHE="$REAL_HOME/.cache/glow"
+    local TAG VER BASE DLURL ARCHIVE
+
+    # ── 版本(API 不通时用已知兜底版本) ──
+    sub "查询最新版本..."
+    TAG="$(gh_latest_tag charmbracelet/glow)"
+    [ -n "$TAG" ] || TAG="v3.0.0"
+    VER="${TAG#v}"
+    info "目标版本: $TAG"
+    BASE="glow_${VER}_Linux_x86_64.tar.gz"
+    DLURL="https://github.com/charmbracelet/glow/releases/download/$TAG/$BASE"
+    ARCHIVE="$CACHE/$BASE"
+
+    if [ "${FORCE:-0}" -ne 1 ] && [ -x "$BIN" ] && [ -f "$DESK" ]; then
+        info "glow 已就位($("$BIN" --version 2>/dev/null | head -1)), 跳过(FORCE=1 可强制重装)"
+        return 0
+    fi
+
+    # ── 下载(镜像优先; 固定缓存名 → 断了重跑能接着下) ──
+    mkdir -p "$CACHE" "$REAL_HOME/.local/bin" || return 1
+    if [ ! -s "$ARCHIVE" ]; then
+        sub "下载 $BASE (约 6.5MB, 镜像优先)..."
+        local ok=0 u
+        for prefix in "https://gh-proxy.com/" "https://ghfast.top/" "https://ghproxy.net/" ""; do
+            u="${prefix}${DLURL}"
+            sub "尝试: $(printf '%s' "$u" | cut -c1-78)"
+            url_reachable "$u" || { sub "  探活失败, 换源"; continue; }
+            if curl -fL --http1.1 --connect-timeout 10 --max-time 300 -C - \
+                    "$u" -o "$ARCHIVE" 2>/dev/null && [ -s "$ARCHIVE" ]; then
+                ok=1; info "  已下载 $(du -h "$ARCHIVE" 2>/dev/null | cut -f1)"; break
+            fi
+            sub "  下载失败, 换源"
+        done
+        [ "$ok" -eq 1 ] || { err "全部源下载失败: $DLURL"; return 1; }
+    else
+        info "已有缓存包($(du -h "$ARCHIVE" 2>/dev/null | cut -f1)), 直接用"
+    fi
+
+    # ── 解包取二进制 ──
+    local stage="$CACHE/.stage.$$" src
+    rm -rf "${stage:?}"; mkdir -p "$stage" || return 1
+    if ! bsdtar -xf "$ARCHIVE" -C "$stage" 2>/dev/null && ! tar -xzf "$ARCHIVE" -C "$stage" 2>/dev/null; then
+        err "解包失败(包损坏?)"; rm -rf "${stage:?}"; return 1
+    fi
+    src="$(find "$stage" -type f -name glow 2>/dev/null | head -1)"
+    if [ -z "$src" ]; then
+        err "包里没有 glow 可执行文件(上游发布物结构变了?)"
+        sub "包内顶层: $(ls -1 "$stage" 2>/dev/null | tr '\n' ' ')"
+        rm -rf "${stage:?}"; return 1
+    fi
+    cp -f "$src" "$BIN" && chmod 755 "$BIN" || { err "安装失败"; rm -rf "${stage:?}"; return 1; }
+    cp -f "$CACHE/$BASE" "$REAL_HOME/.cache/glow/" 2>/dev/null || true
+    rm -rf "${stage:?}"
+    local gver; gver="$("$BIN" --version 2>/dev/null | head -1)"
+    [ -n "$gver" ] && info "已安装: $BIN ($gver)" || warn "装上了但跑不起来($BIN --version 无输出)"
+
+    # ── 桌面项: 双击 .md 直接在终端里渲染 ──
+    #   ⚠️ 两条与启动器同样的规矩: ①Terminal=true 让桌面环境自己挑终端(不硬写 konsole)
+    #      ②不写 TryExec(它在缺失时会把整个入口隐藏, 而不是降级)
+    mkdir -p "$(dirname "$DESK")" || return 1
+    {
+        printf '[Desktop Entry]\n'
+        printf 'Type=Application\n'
+        printf 'Name=Markdown 阅读器 (glow)\n'
+        printf 'Comment=在终端里渲染 Markdown(glow); 装在 /home, 扛原子升级\n'
+        printf 'Exec=%s -p %%f\n' "$BIN"
+        printf 'Terminal=true\n'
+        printf 'Categories=Utility;TextTools;\n'
+        printf 'MimeType=text/markdown;text/x-markdown;\n'
+    } >"$DESK"
+    chmod 644 "$DESK"
+    command -v update-desktop-database >/dev/null 2>&1 \
+        && update-desktop-database "$(dirname "$DESK")" >/dev/null 2>&1 || true
+
+    cat <<EOF
+  ${C_OK}完成!${C_R} 命令行: glow README.md     (分页浏览: glow -p README.md)
+  双击 .md 文件也会用它打开(text/markdown 已注册)。
+  原子升级后: 二进制与桌面项都在 /home, 无需重装。
+EOF
+}
 
 # ===========================================================================
 #  --status
@@ -2869,6 +2971,7 @@ map_step() {
         12|selfheal|heal|自愈) echo setup_selfheal ;;
         13|wiliwili|bili|bilibili) echo setup_wiliwili ;;
         14|localsend|ls|传文件|lanshare) echo setup_localsend ;;
+       15|mdread|md|glow|markdown|markdown阅读器) echo setup_mdread ;;
         *) echo "" ;;
     esac
 }
@@ -2882,7 +2985,7 @@ adopt_state() {
     echo "  判据: 各步骤的落地复核(文件/包/systemd unit 是否真实存在)"
     echo
     local fn adopted=0 pending=0
-    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend; do
+    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread; do
         if verify_step "$fn"; then
             state_mark "$fn"
             info "[认领] $(step_label "$fn") —— 已达标"
@@ -2927,7 +3030,7 @@ done
 #      多跑几个"其实没坏"的步骤只是多几次判空, 代价远小于漏恢复一项;
 #   ③ 以后新增步骤(如 [13])自动纳入恢复范围, 不用记得回来补两处。
 # AFTER_UPGRADE 只用于: 版本变化提示 + rootfs 空间预检。
-[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend)
+[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread)
 
 if [ "$DO_RESET" -eq 1 ]; then
     state_reset
@@ -3029,4 +3132,4 @@ done
 echo
 step "全部完成"
 echo "  复查: bash $SCRIPT_NAME --status"
-echo "  分步: bash $SCRIPT_NAME 1 2 3 4 5 6 7 8 9 10"
+echo "  分步: bash $SCRIPT_NAME 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
