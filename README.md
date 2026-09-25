@@ -45,6 +45,12 @@ bash steamos-setup.sh 3             # 分步安装(便于定位错误)
 bash steamos-setup.sh               # 或一次全量
 ```
 
+> **从网盘 / Windows 拷回来的包**（不是 git clone）要先修执行位，否则双击没反应、
+> 脚本也可能跑不起来：
+> ```bash
+> chmod +x *.sh *.desktop
+> ```
+
 **断点续传**：中断后重跑同一条命令会跳过已完成步骤。进度记在
 `~/.cache/steamos-setup/state`；`--reset` 清进度，`FORCE=1` 强制重跑。
 
