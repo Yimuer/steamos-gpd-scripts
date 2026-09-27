@@ -7,7 +7,10 @@
 #   加不加 --wayland-text-input-version=3 在协议层面完全一致，属无效改动。
 #   真正根因：KWin 未配置输入法进程（kwinrc 缺 [Wayland] InputMethod），
 #   按键根本不会被转发给 fcitx5 → 所有 Wayland 原生应用都无法输入中文。
-#   诊断: check-wayland-ime.sh   修复: 系统设置 → 键盘 → 虚拟键盘 → 选 Fcitx 5
+#   诊断: 系统设置 → 键盘 → 虚拟键盘(选输入法); 或看 ibus 进程是否在跑
+#   修复: 系统设置 → 键盘 → 虚拟键盘 → 选 IBus / Fcitx 5
+#   (注: 本文档曾指向一个 `check-wayland-ime.sh`, 那个脚本**从未存在过** —— 2026-09-27
+#    清理悬空引用时改掉。别去找了。)
 #   本脚本保留仅用于确保 Electron 走原生 Wayland，属无害加固，非必需。
 #
 # 参考原理：

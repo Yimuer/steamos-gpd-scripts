@@ -17,7 +17,12 @@
 set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-HOME_DIR="${REAL_HOME:-/home/deck}"
+# 解析真实用户/家目录: sudo 下 $HOME 是 /root, 必须用 SUDO_USER 找回 deck 的家;
+# 取不到(如直接以 root 跑)再退 /home/deck, 避免把插件装进 /root(2026-09-25 审查发现)
+REAL_USER="${SUDO_USER:-deck}"
+REAL_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6)"
+[ -n "$REAL_HOME" ] || REAL_HOME="/home/$REAL_USER"
+HOME_DIR="$REAL_HOME"
 PLUGIN_DIR="$HOME_DIR/homebrew/plugins"
 PLUGIN_NAME="SimpleDeckyTDP"
 REPO="aarron-lee/SimpleDeckyTDP"
@@ -126,7 +131,11 @@ if [ -d "$PLUGIN_DIR/$PLUGIN_NAME" ]; then
     mv "$PLUGIN_DIR/$PLUGIN_NAME" "$BAK" && info "已备份旧版 → $BAK"
 fi
 
-TMPX="$(mktemp -d "${TMPZIP}.x.XXXXXX")"
+TMPX="$(mktemp -d "${TMPZIP}.x.XXXXXX")" || { err "无法创建临时解压目录"; exit 1; }
+# 解包/安装失败时保留 TMPX 便于排查(路径会打印出来); 成功路径在末尾显式清理, 不会越攒越多
+cleanup_tmpx() { [ -n "${TMPX:-}" ] && [ -d "$TMPX" ] && warn "临时解压目录已保留(供排查): $TMPX"; }
+trap cleanup_tmpx EXIT
+
 unzip -q "$TMPZIP" -d "$TMPX"
 
 # 有的版本解压后自带一层目录, 有的直接是文件
@@ -137,11 +146,11 @@ elif [ -f "$TMPX/$PLUGIN_NAME/package.json" ]; then
 else
     SRC="$(find "$TMPX" -maxdepth 2 -name package.json -printf '%h\n' | head -1)"
 fi
-[ -n "${SRC:-}" ] && [ -f "$SRC/package.json" ] || { err "找不到 package.json"; exit 1; }
+[ -n "${SRC:-}" ] && [ -f "$SRC/package.json" ] || { err "找不到 package.json (临时目录: $TMPX)"; exit 1; }
 
 if ! mv "$SRC" "$PLUGIN_DIR/$PLUGIN_NAME"; then
-    rm -rf "$TMPX"
-    err "安装失败: 无法写入 $PLUGIN_DIR (权限不足?)"
+    # 不再删除 TMPX: 保留供排查(路径已在上方面 trap 中提示)
+    err "安装失败: 无法写入 $PLUGIN_DIR (权限不足? 临时目录: $TMPX)"
     sub "请改用: sudo bash $SCRIPT_NAME"
     exit 1
 fi

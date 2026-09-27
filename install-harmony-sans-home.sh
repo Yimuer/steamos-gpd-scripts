@@ -110,6 +110,12 @@ do_install() {
 
     echo "════════ 把鸿蒙字体装成系统字体(装进 /home) ════════"
     mkdir -p "$CACHE_DIR" "$FONT_DIR" "$FC_DIR" || return 1
+    # 以 root 跑(可选组件菜单里就是 sudo 调的)时, 上面三个目录会记成 root 属主 ——
+    # 用户下次自己重跑就顶回 "mkdir: 权限不够", 而且用户完全修不动(2026-09-25 实测)。
+    # 建完立刻还给真实用户; 属主已经对时 chown 是无害幂等的。
+    if [ "$(id -u)" -eq 0 ]; then
+        chown -R "$REAL_USER:" "$CACHE_DIR" "$FONT_DIR" "$FC_DIR" 2>/dev/null || true
+    fi
 
     # ── 0. 已装好就跳过(重跑本脚本最常见的原因只是想确认, 不必再解一遍包) ──
     if [ "$FORCE" -eq 0 ] && [ -f "$FC_FILE" ] && \

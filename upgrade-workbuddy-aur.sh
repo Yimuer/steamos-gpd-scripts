@@ -18,14 +18,23 @@ set -euo pipefail
 FIX_SCRIPT="$(cd "$(dirname "$0")" && pwd)/fix-workbuddy-wayland-ime.sh"
 ASKPASS="/tmp/wb-askpass.sh"
 
+# 退出(含异常/信号)时务必删掉 askpass 临时脚本: 它留在 /tmp 会被当作 sudo 凭据助手复用,
+# 虽不含密码但有被滥用的风险(2026-09-25 审查发现残留隐患)
+cleanup_askpass() { rm -f "$ASKPASS"; }
+trap cleanup_askpass EXIT INT TERM
+
 # 图形密码助手：供无 TTY 环境下 sudo 使用（密码只在 KDE 对话框里输入，不落盘）
 make_askpass() {
+    local _ou
+    _ou="$(umask)"
+    umask 077   # 先收紧, 文件创建时不泄漏给其它用户
     cat >"$ASKPASS" <<'EOF'
 #!/usr/bin/env bash
 exec /usr/bin/kdialog --title "WorkBuddy 升级" \
     --password "安装 WorkBuddy 需要管理员权限，请输入登录密码："
 EOF
     chmod 700 "$ASKPASS"
+    umask "$_ou"   # 还原, 不影响后续命令(如 yay 的缓存权限)
 }
 
 echo "==> 当前已安装版本："
@@ -50,7 +59,7 @@ else
     echo "警告：找不到 $FIX_SCRIPT，跳过输入法修复" >&2
 fi
 
-rm -f "$ASKPASS"
+# 注: ASKPASS 的清理已交给 trap(覆盖所有退出路径), 这里不再显式 rm
 
 echo
 echo "=============================================="

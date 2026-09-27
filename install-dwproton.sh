@@ -103,14 +103,15 @@ OK=0
 for i in 1 2 3 4 5 6; do
     SZ="$(stat -c%s "$TMP/$TARBALL" 2>/dev/null || echo 0)"
     [ "$i" -gt 1 ] && warn "第 $i 次尝试(已有 $SZ 字节, 续传)..."
-    if curl -fL --http1.1 --connect-timeout 20 --retry 3 --retry-all-errors \
+    # ⚠ --max-time 1800: 285MB 大包, 网络卡住时不再无限挂着; 中断可 -C - 续传接着下
+    if curl -fL --http1.1 --connect-timeout 20 --max-time 1800 --retry 3 --retry-all-errors \
             -C - -o "$TMP/$TARBALL" "$URL"; then OK=1; break; fi
     sleep 3
 done
 [ "$OK" = 1 ] || err "下载失败(已重试 6 次)。可手动从 $HOST/$OWNER/$REPO/releases 下载后放到 $TMP 再重跑"
 
 # ---- 校验(有就校验, 没有就跳过) ----
-if curl -fsSL --connect-timeout 10 --retry 2 -o "$TMP/$SUMFILE" "$SUM_URL" 2>/dev/null \
+if curl -fsSL --connect-timeout 10 --max-time 120 --retry 2 -o "$TMP/$SUMFILE" "$SUM_URL" 2>/dev/null \
    && [ -s "$TMP/$SUMFILE" ]; then
     info "校验 SHA512..."
     ( cd "$TMP" && sha512sum -c "$SUMFILE" ) || err "SHA512 校验不通过! 请勿使用该文件"
@@ -119,9 +120,23 @@ else
     warn "未取到校验文件, 跳过完整性检查"
 fi
 
-# ---- 解压 ----
-info "解压到 $TOOLS_DIR ..."
-tar -xf "$TMP/$TARBALL" -C "$TOOLS_DIR" || err "解压失败"
+# ---- 解压：暂存 → 校验 → 原子换 ----
+# ⚠️ 直接解到 $TOOLS_DIR 的话, 磁盘满 / 解包中途失败会留下半个版本(Steam 里显示成可选但一用就崩)。
+#    先解到暂存目录, 确认包里真有 dwproton-* 再搬过去; 失败则暂存清掉、缓存保留(重跑续传)。
+info "解压到暂存目录..."
+STAGE="$TMP/stage"
+rm -rf "${STAGE:?}"; mkdir -p "$STAGE"
+tar -xf "$TMP/$TARBALL" -C "$STAGE" \
+    || { rm -rf "${STAGE:?}"; err "解包失败(磁盘空间不够?) —— 下载缓存保留, 修好后重跑会续传"; }
+compgen -G "$STAGE/dwproton-*" >/dev/null \
+    || { rm -rf "${STAGE:?}"; err "包内没有 dwproton-* 目录 —— 包结构异常, 未改动 $TOOLS_DIR"; }
+for _d in "$STAGE"/dwproton-*; do
+    [ -d "$_d" ] || continue
+    _name="$(basename "$_d")"
+    rm -rf "${TOOLS_DIR:?}/${_name:?}"
+    mv "$_d" "$TOOLS_DIR/$_name" || err "移动到 $TOOLS_DIR 失败(空间不足?)"
+done
+rm -rf "${STAGE:?}"
 info "解压完成"
 
 # ---- 修正 compatibilitytool.vdf 里的工具名 ----

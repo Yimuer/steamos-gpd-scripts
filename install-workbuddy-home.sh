@@ -10,7 +10,8 @@
 #     · 幸存的：/opt/WorkBuddy 本体
 #       —— SteamOS 把 /opt bind-mount 到 /home 分区
 #          (/home/.steamos/offload/opt)，物理上根本不在 rootfs 里。
-#          /usr/local 同理也是 offload 的。
+#          ⚠️ 但 **/usr/local 不是** —— 它属于 /usr, 升级会被冲(2026-09-25 实测纠正;
+#             下面放 /usr/local 软链那段是运行时判断 usrsrc_mount(), 不是想当然)。
 #     · 被冲掉的：/usr/bin/workbuddy(入口) + /usr 里的系统 electron(运行时)
 #                 + pacman 数据库记录(导致 pacman -Qq workbuddy 判为"没装")
 #  结果：主体还在，但没有运行时、没有入口 —— 看起来就像"被整个冲掉了"。
@@ -291,7 +292,7 @@ do_install() {
         warn "/opt 与 / 同分区: 原子升级会连主体一起冲掉，本形态只能省掉『重装运行时/入口』这一步"
     fi
     if [ -n "$(usrsrc_mount)" ] && [ "$(usrsrc_mount)" != "$rm" ]; then
-        info "/usr/local 也是 offload 的 → 稍后在那放个软链做 PATH 兜底"
+        info "/usr/local 是独立挂载(offload) → 稍后在那放个软链做 PATH 兜底"
     fi
 
     # ── 3. 自带 electron 运行时 ────────────────────────────────────
@@ -401,11 +402,12 @@ do_install() {
         update-desktop-database "$(dirname "$WB_DESKTOP")" >/dev/null 2>&1 || true
     fi
 
-    # ── 6. /usr/local/bin 兜底软链(可选; /usr/local 也 offload, 同样扛升级) ──
+    # ── 6. /usr/local/bin 兜底软链(可选, **只有 /usr/local 是独立挂载时才做**) ──
+    #  ⚠️ /usr/local 默认属于 /usr(升级会被冲), 所以这里必须运行期判断, 不能假定。
     echo
     if [ -n "$(usrsrc_mount)" ] && [ "$(usrsrc_mount)" != "$rm" ]; then
         if run_root ln -sfn "$WB_BIN" /usr/local/bin/workbuddy; then
-            ok "/usr/local/bin/workbuddy → $WB_BIN (PATH 里的命令行入口, 同样扛升级)"
+            ok "/usr/local/bin/workbuddy → $WB_BIN (PATH 入口; 该目录是独立挂载, 扛升级)"
         else
             warn "软链创建失败；不影响图形菜单启动"
         fi

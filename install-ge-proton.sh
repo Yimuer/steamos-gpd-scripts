@@ -48,11 +48,12 @@ mkdir -p "$TMP"
 
 # ---- 下载（断点续传 + 重试）----
 info "下载主包（约 509MB）..."
-curl -fL --connect-timeout 10 --retry 3 --retry-delay 2 -C - \
+# ⚠ --max-time 1800: 509MB 大包, 网络卡住时不再无限挂着; 中断可 -C - 续传接着下
+curl -fL --connect-timeout 10 --max-time 1800 --retry 3 --retry-delay 2 -C - \
 	-o "$TMP/$TARBALL" "$URL" || err "下载失败，可换镜像重试：MIRROR=https://ghfast.top bash $0 $TAG"
 
 info "下载校验文件..."
-curl -fsSL --connect-timeout 10 --retry 3 -o "$TMP/${TAG}-x86_64.sha512sum" "$SUM_URL" \
+curl -fsSL --connect-timeout 10 --max-time 120 --retry 3 -o "$TMP/${TAG}-x86_64.sha512sum" "$SUM_URL" \
 	|| warn "校验文件下载失败，跳过完整性检查"
 
 if [ -s "$TMP/${TAG}-x86_64.sha512sum" ]; then
@@ -61,11 +62,22 @@ if [ -s "$TMP/${TAG}-x86_64.sha512sum" ]; then
 	info "校验通过"
 fi
 
-# ---- 解压安装 ----
-info "解压到 $TOOLS_DIR ..."
+# ---- 解压安装：暂存 → 校验 → 原子换 ----
+# ⚠️ 别"先删旧版再解包": 磁盘满 / 解包中途失败时, 旧版本已经没了、新版本又没落地 ——
+#    用户会白白失去一个本来能用的兼容层, 而屏幕上是"安装完成"。
+#    先解到暂存目录, 校验 proton 真在, 再 mv 过去(与目标同在 /home 分区, mv 原子);
+#    任何一步失败都保留旧版本与下载缓存(缓存留着, 重跑才好 -C - 续传)。
+info "解压到暂存目录..."
+STAGE="$TMP/stage"
+rm -rf "${STAGE:?}"; mkdir -p "$STAGE"
+tar -xzf "$TMP/$TARBALL" -C "$STAGE" \
+	|| { rm -rf "${STAGE:?}"; err "解包失败(磁盘空间不够?) —— 旧版本与下载缓存都保留, 修好后重跑会续传"; }
+[ -f "$STAGE/$TAG/proton" ] \
+	|| { rm -rf "${STAGE:?}"; err "包内没有 $TAG/proton —— 包结构异常, 旧版本未动"; }
 rm -rf "${TOOLS_DIR:?}/${TAG:?}"      # :? 守卫: 变量为空时宁可报错, 也别 rm -rf "/..."
-tar -xzf "$TMP/$TARBALL" -C "$TOOLS_DIR"
+mv "$STAGE/$TAG" "$TOOLS_DIR/$TAG" || err "移动到 $TOOLS_DIR 失败(空间不足?) —— 旧版本已删, 重跑本脚本会重下"
 chmod +x "$TOOLS_DIR/$TAG/proton" 2>/dev/null || true
+rm -rf "${STAGE:?}"
 
 info "==================== 安装完成 ===================="
 echo "完全退出 Steam 再重开（不是关窗口）：Steam → 电源 → 退出"

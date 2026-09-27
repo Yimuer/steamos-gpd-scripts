@@ -27,7 +27,7 @@
 
 ## 1. 脚本结构速览
 
-### 1.1 主脚本 `steamos-setup.sh`（约 1976 行，自包含）
+### 1.1 主脚本 `steamos-setup.sh`（约 3700 行，自包含）
 
 步骤与函数对应关系（改哪步找哪个函数）：
 
@@ -35,7 +35,7 @@
 |---|---|---|
 | `0`（自动） | `prepare()` | 环境准备：sudo 提权、SteamOS 只读解除、pacman-key、补 core/extra 源、环境硬校验 |
 | `1`/`cn` | `setup_cn()` | archlinuxcn 源 |
-| `2`/`im` | `setup_im()` | **IBus 原生输入法** + 中文引擎（注意：**已不是 fcitx5**） |
+| `2`/`im` | `setup_im()` | **空函数（已禁用）** —— 按 2026-09-24 要求**不改动系统输入法**，避免与 KWin/IBus 打架；`check.sh` 有断言保证它保持为空（旧文档曾写成"IBus 原生输入法"，已纠正） |
 | `3`/`wb` | `setup_wb()` | WorkBuddy（AUR 包） |
 | `4`/`backkey` | `setup_backkey()` | GPD Win5 背键 + inputplumber（deck 手柄映射） |
 | `5`/`decky` | `setup_decky()` | Decky Loader |
@@ -49,6 +49,7 @@
 | `13`/`wiliwili` | `setup_wiliwili()` | B站客户端（flatpak `--user`，落 /home） |
 | `14`/`localsend` | `setup_localsend()` | **LocalSend 局域网传文件**（官方 AppImage 解到 /home + 放行防火墙 53317） |
 | `15`/`mdread` | `setup_mdread()` | **markdown 阅读器 glow**（单个静态二进制 → `~/.local/bin`，不占 rootfs；顺带注册 `.md` 双击打开） |
+| `16`/`firefox` | `setup_firefox()` | **Firefox Nightly**（官方 tar.xz 解到 /home，复用 `install-app-home.sh`；可自更新、扛原子升级） |
 
 辅助函数：`url_reachable()`（下载探活）、`homedir()`、`state_*`（断点续传）、
 `verify_step()`（落地复核）、`step_label()`、`map_step()`（参数→函数）、`show_status()`、
@@ -58,6 +59,8 @@
 
 | 文件 | 定位 | 备注 |
 |---|---|---|
+| `steamos.sh` | **统一入口（唯一的人机接口）**：菜单 / 清单 / 帮助 / 分发 / 自检 / 打包 | **表驱动**：一张 `REG` 表派生一切；`check.sh` 断言"注册表 ↔ 文件"双向一致。它**不提权、不进 sudoers**。见 §1.5 |
+| `steamos.desktop` | 上面的双击入口（薄壳） | 与 `重装后先运行我.desktop` 同款约束：不写 `TryExec`、`Terminal=true`、图标用 `utilities-terminal`（不新增图标依赖） |
 | `20-gpd_win5.capmap.yaml` | **主脚本第 4 步的依赖**，自定义能力表（KB→QuickAccess） | 打包必须带上 |
 | `20-gpd_win5.deck.yaml` | deck 目标覆盖配置的参考 | 主脚本运行时从 `50-gpd_win5.yaml` 派生，此文件供对照 |
 | `install-decky-tdp.sh` | 单独装 TDP 插件（= 主脚本第 9 步） | |
@@ -67,6 +70,7 @@
 | `install-decky-loader.sh` / `install-ge-proton.sh` | 单独装 Decky / GE-Proton | |
 | `fix-workbuddy-wayland-ime.sh` / `upgrade-workbuddy-aur.sh` | WorkBuddy 输入法修复 / 升级 | |
 | `install-workbuddy-home.sh` | **WorkBuddy 迁入 /home（原生无沙箱 + 扛原子升级）** | `--check` 只读自检 / `--sandbox-off` 关命令沙箱；步骤[3]尾部自动调用 |
+| `install-deb-portable.sh` | **任意 deb 包便携化：拆包搬进 /home（通用能力，2026-09-27）** | 可视化(kdialog)引导选文件/链接→选主程序；`--check` 升级后体检；`--remove` 卸载。菜单项 `deb-portable` |
 | `setup-fcitx5-flypy.sh` / `setup-steam-game-mode-ime.sh` | fcitx5 旧方案（已弃用，保留备选） | |
 | `set-steam-launchoptions.py` | 写 Steam 启动选项（自动探测 userid） | 主脚本第 6 步会生成更完善的 `steam-launch-games.py` |
 | `reset-endfield-sdk.sh` | **终末地黑屏的主修复手段**（清 SDK 本地状态），见 [6h] | 带健康检测 / `--dry-run` / `--force`，改名备份不删除 |
@@ -79,12 +83,15 @@
 | `install-workbuddy-home.sh` | WorkBuddy 的 `/home` 自持化 | ⚠️ 不并入引擎: 它不下载产物, 而是让 AUR 装好的 `/opt/WorkBuddy` 在 /home 下自持 |
 | `install-harmony-sans-home.sh` | 鸿蒙字体装成系统字体(装 `~/.local/share/fonts`, 扛升级) | 不用 AUR 包(rootfs); fontconfig 落 conf.d/ 不覆盖 fonts.conf |
 | `install-nextkde-home.sh` | **NextKde(KOS 桌面外壳)装进 `/home`** | **包装上游 `tools/kosctl`, 不重写构建**; 前置检查 + 记录 KWin 版本(升级后判定插件要不要重编); 会切桌面外壳, 故有显式确认 |
+| `fix-missing-dev-files.sh` | **补 SteamOS 镜像裁掉的开发文件**(头文件/cmake/pkgconfig) —— 编译类任务的前置 | 默认只抽三类开发文件(不碰运行时、不带 locale/doc); 版本不一致**拒绝**装(防部分升级); `--check`/`--apply`/`--dry-run`; 见 §12 |
+| `fix-dsh-node-pty.sh` | **修 dsh 桌面版插件安装因 node-pty 编译失败而起不来** | 根因是 AppImage 注入 `PYTHONHOME` 毒害系统 python3（**不是缺 python**）; 解药 = 把产物放进 `prebuilds/linux-x64/` 让 node-gyp 永不参与; `--check` 只读体检; 见 §3.11 |
+| `diag-sudo-selfheal.sh` | **自愈免密链路体检（只读，需 root）** | 查 sudoers 有没有 include、哪些文件被 sudo 忽略、规则里的路径是否失配、三条 NOPASSWD 在不在；判定方法见 §11.9 |
 | `verify-upstreams.sh` | **上游依赖体检（只读联网）** | 发布前/重装前跑；区分下载路径与 API 路径；见 §9.1 |
 | `tools/shellcheck(.exe)` | 可选：放这就能让 `check.sh` 第 3 节生效 | 当前全脚本 warning = 0，别退回 |
 
 ### 1.3 可选组件安装器：新增一个可选项怎么做
 
-`可选组件安装.sh` 是 menu-driven 的独立脚本（`sudo -E` 自提权，**不属** 15 步主线）。
+`可选组件安装.sh` 是 menu-driven 的独立脚本（`sudo -E` 自提权，**不属** 16 步主线）。
 新增条目**只改三处**，不要散落逻辑：
 
   1. 写 `install_xxx()` —— 逻辑重的话就 call 独立脚本（如 `install_firefox_nightly`
@@ -101,6 +108,95 @@
   （`SUDO_USER` → `getent passwd`），**不要写死 `/home/deck`**。
 - 教训：写判据函数时别引用未定义变量（`set -u` 下会静默变空字符串 →
   `[ -x "/.local/..." ]` 恒假，菜单状态就永远不对）。
+
+### 1.4 任意 deb 便携化（通用能力，`install-deb-portable.sh`）
+
+Linux 软件多数只发 `.deb`，直装会进 `/usr` → 原子升级必被冲。这个脚本把**任意** deb
+拆包搬进 `/home`，是 WPS / Clash Verge 那套套路的通用化：
+
+```
+deb → 取 data.tar.* → 整棵树(通常是 usr/) → ~/.local/opt/<名>
+入口 ~/.local/bin/<名> + 桌面项/图标 → ~/.local/share/...
+```
+
+**三条硬约束（写进代码，也写进 check.sh 断言）**
+1. **保留包内相对结构**：Electron/Tauri 的资源按可执行文件相对位置找，打散成 bin/ + lib/ 会起不来。
+2. **判据看真二进制**（`--bin` 指定的路径必须存在），不看"目录在"。
+3. **依赖体检不能假绿**：`ldd` 需要可执行位（解出来的文件先补 `+x`）；`ldd` 完全无输出时
+   判 `UNKNOWN`（"无法判定"），**不能**报成"依赖齐全"。
+   入口 wrapper 会自检这些库，缺了打印可复制的装回命令 —— 绝不"点了没反应"。
+
+**主程序怎么定**：优先用包内 `.desktop` 的 `Exec=`；有多个可执行文件时弹出单选
+（kdialog `--radiolist`，无图形时终端编号选择）；也可用 `--bin` 直接指定
+（`usr/bin/foo` 与相对树根的 `bin/foo` 两种写法都接受）。
+
+**已知边界**：依赖若在 `/usr`（如 Tauri 的 webkit2gtk），那部分升级仍会被冲 ——
+脚本会写明、入口会自检、菜单文案会提示，`--check` 能体检；**没有**做成自动补回，
+因为那需要在 sudoers 放行 `pacman`（提权面扩大，属安全取舍，交给用户决定）。
+
+#### 案例：Clash Verge Rev（2026-09-27 新增，用户要求"千万不能被升级冲掉"）
+上游 **不发 AppImage**（Linux 只有 deb/rpm），deb 直接装会进 `/usr` → 升级必被冲。
+走 WPS 同款路子（拆 deb），但**落点选 /home**（WPS 是因为官方 Relocations 才必须 /opt）：
+```
+官方 deb → 拆出 data.tar.* → 整棵 usr/ 树搬进 ~/.local/opt/clash-verge/usr
+入口 ~/.local/bin/clash-verge + 桌面项/图标 → ~/.local/share/...   （全部扛升级）
+```
+**两个关键点（踩过才知道）**
+1. **必须保留 `usr/` 的相对结构**（`STAGE_REL="tree/usr"`）—— Tauri 的资源是按可执行文件
+   相对位置找的，打散成 bin/ + lib/ 会起不来。已实测：拆完直接跑 `usr/bin/clash-verge` 正常。
+2. **Tauri 需要 `webkit2gtk-4.1`（WebView），它在 `/usr`** —— 这是本组件**唯一**会被升级冲掉的部分
+   （本机原缺；extra-3.9 快照源里有，36MB，版本与系统对齐不会造成部分升级）。
+   对策三层：装的时候一并 `pacman -S`；**入口 wrapper 先自检这个 .so**，缺了直接打印可复制的
+   装回命令（绝不"点了没反应"）；菜单文案里写明"升级后重跑本项补回"。
+   > 没有做成"自动补回"：那需要在 sudoers 里放行 `pacman`（哪怕限定包名也是提权面扩大），
+   > 属于安全取舍，要由用户决定，见 CHANGELOG 3.9.8 的待决项。
+- 实测：`install-app-home.sh clash-verge` 一次跑通（98MB deb → 283M 落 /home），
+  `--check` 就绪，入口自检按设计报缺库并给出命令。上游已加进 `verify-upstreams.sh`。
+
+### 1.5 统一入口 `steamos.sh`（2026-09-27，v3.10.0）
+
+**它解决什么**：30+ 个脚本按"干什么"命名（`doctor` / `diag-` / `fix-` / `install-`），
+现场着急时最费时间的不是修，而是"我该跑哪个"。入口把这件事**收敛成一张表**。
+
+**注册表 = 唯一事实来源**（菜单 / 清单 / 帮助 / 分发 / 自检全部由它派生）：
+
+```
+命令|文件|默认参数|模式|分组|说明
+  · 文件写 `-` → 内建命令(由 steamos.sh 自己实现, 用于自检/打包/包校验)
+  · 默认参数   → 自动补上, 用户给的参数追加在后
+  · 模式       → ro=只读可无人值守 / root=会自己 sudo / ui=需要人在终端前
+```
+
+**新增一条命令只改一行**（在 `REG` 里加一行）。但真正省事的是**断言兜底**：
+`check.sh` §2.16 会校验「注册表 ↔ 文件」双向一致 —— 加了脚本忘了登记、登记了但文件改名，
+都会当场报红。这是这套设计的关键：**不靠人记得。**
+
+**四条不能违反的设计约束**
+
+1. **只分发，不复制逻辑**：判据/修复都留在原脚本里。入口里写第二份 = 迟早漂移。
+2. **自己不提权**：需要 root 的转发给原脚本自己 `sudo`。入口是**用户可写**的，
+   写进 `sudoers` 等于放行任意提权 —— `check.sh` 有两条断言钉死（不许出现提权调用 /
+   不许被 `NOPASSWD` 引用）。
+3. **非交互绝不挂起**：`stdin` 不是终端时，`ro` 项照跑（无人值守体检正需要），
+   另外两档**只打印该执行的那条命令**并退 4。项目里踩过 `echo q | bash 可选组件安装.sh`
+   永久挂住的坑，不能再让入口成为第二个。
+4. **自包含**：不引 `lib/`，可单独拷走（铁律 1）。
+
+**退出码约定**：透传被调脚本；入口自身 `2`=用法/未知命令、`3`=缺文件、`4`=非交互被拦。
+（`4` 这一档在无人值守脚本里很好用：既不是"跑成功"，也不会挂住等密码。）
+
+**打包与验证**：`steamos.sh pack` → `dist/steamos-toolbox-<版本>.tar.gz` + `SHA256SUMS`；
+`steamos.sh dist-verify` 把它解到临时目录**实跑一遍**（关键文件在位 / 执行位完好 /
+没混进版本库元数据与会话产物 / 包内 `selfcheck` 通过）。
+> ⚠️ `dist-verify` 刻意**不跑完整 `check.sh`** —— 后者有若干断言依赖 git 台账
+> （`git ls-files -s` 查执行位），在"没有 `.git` 的解包目录"里会**假红**。
+> 发布包按"自包含"标准验，仓库按"台账"标准验，两者用途不同。
+> 另：`tar --exclude` 的模式**不能带 `./` 前缀** —— GNU tar 的规则是"不含 `/` 的模式按基名
+> 在任意层级匹配"。写成 `./.workbuddy` 只挡得住顶层，`steamos-nix/` 子目录里的会话产物
+> 照样被打进包（这个 bug 就是 `dist-verify` 当场抓到的）。
+
+**与 `重装后先运行我.sh` 的分工**：后者是**重装当天的一次性向导**（顺序跑完再问可选项）；
+入口是**日常的万能钥匙**（体检/修复/装单个应用/打包）。两者都只是转发，不复制逻辑。
 
 ---
 
@@ -174,6 +270,10 @@ Before=inputplumber.service
 改镜像数组时注意：`ghfast.top`/`gh-proxy.com`/`ghproxy.net` 这些代理会偶尔抽风，
 别只留一个源。
 
+**查上游最新 tag 一律用公共函数 `gh_latest_tag()`**（已含镜像链与 API/下载路径的区别），
+不要在脚本里另写一套 `curl api.github.com`：那既绕过了镜像，也会在 Windows 沙箱里被
+证书吊销检查拦下（那种环境需 `--ssl-no-revoke`，**仅手工测试时加，脚本里不许写**）。
+
 ### 2.6 大文件别下到 /tmp
 
 SteamOS 的 `/tmp` 是 tmpfs（吃内存）。GE-Proton（约 500MB）、makepkg 的 BUILDDIR
@@ -228,7 +328,10 @@ SteamOS 的 `/tmp` 是 tmpfs（吃内存）。GE-Proton（约 500MB）、makepkg
 - ⚠️ **别把 `/opt/WorkBuddy` 搬进 `/home`**：AUR PKGBUILD 在 `build()` 里
   `sed -i "s/process.resourcesPath/'\/opt\/WorkBuddy'/g"`，把 app 内的资源路径**硬编码**
   成了字面量 `/opt/WorkBuddy` —— 挪走必崩。而且 `/opt` 本来就在 home 分区，本就不用挪。
-  同理 `/usr/local` 也是 offload 的，所以 `/usr/local/bin/workbuddy` 软链做命令行入口也持久。
+  ⚠️ **别把 `/usr/local` 当成"同类"**：它属于 `/usr`，**升级会被冲**（2026-09-25 实测纠正）。
+  `install-workbuddy-home.sh` 因此是**运行时判断**的：`usrsrc_mount()` 拿到 `/usr/local` 的 SOURCE，
+  是独立挂载才放软链，否则跳过并打印原因（`--check` 里能看到）。命令行入口的**正路**是
+  `~/.local/bin/workbuddy`（`~/.local/bin` 本来就在 PATH 里）。
 - **沙箱**是 WorkBuddy 应用自身的设置（`~/.workbuddy/settings.json` 的 `sandbox.enabled`），
   与装在哪无关；`--sandbox-off` 可关。**Flatpak 版才会被 bubblewrap 关住**（碰不到 /etc、
   systemd），所以坚持用 AUR 原生版，不要换 Discover/flatpak。
@@ -874,6 +977,7 @@ state 里没记录的（从没装过的，比如 dsh）不会趁机新装 ——
 | `[13]` wiliwili | flatpak `--user` → `/home` | ✅ 幸存 | ⏭ 跳过 |
 | `[14]` LocalSend | 程序在 `/home`（`~/.local/opt/localsend`）；**防火墙规则在 `/etc/firewalld`** | 部分 | 🔧 重建（`verify_step` 双判据会把"程序在但搜不到对端"识别为待重建；也挂进了自愈清单） |
 | `[15]` glow | 二进制与 `.desktop` 都在 `/home`（`~/.local/bin` + `~/.local/share/applications`） | ✅ 幸存 | ⏭ 跳过（**选它就是因为它只依赖 glibc** —— 那些 GUI 阅读器要把 Qt/GTK 装进 rootfs，升级必被冲） |
+| `[16]` Firefox Nightly | 全部在 `/home`（`~/.local/opt/firefox-nightly` + 入口/桌面项/图标） | ✅ 幸存 | ⏭ 跳过（官方便携包，装 /home 后自带更新器） |
 
 **幸存不需要管的**：游戏本体、Proton（GE/DW）、Steam 前缀 `compatdata`、
 Decky 插件与其配置、非 Steam 快捷方式、dconf 输入法配置、脚本进度文件。
@@ -934,15 +1038,23 @@ Decky 插件与其配置、非 Steam 快捷方式、dconf 输入法配置、脚�
 
 ```bash
 findmnt -no SOURCE --target /opt          # 与 / 的 SOURCE 不同 → 是 offload, 幸存
-findmnt -no SOURCE --target /usr/local
+findmnt -no SOURCE --target /usr/local    # ⚠️ 实测与 / **相同** → 它属于 /usr, **不扛升级**
 ```
 
 | 位置 | 原子升级后 |
 |---|---|
 | `/home` | ✅ 幸存 |
-| `/opt`、`/usr/local`、`/root`、`/srv` | ✅ **幸存**（bind-mount 到 `/home` 分区 `/home/.steamos/offload/*`） |
+| `/opt`、`/root`、`/srv`、`/nix` | ✅ **幸存**（bind-mount 到 `/home` 分区 `/home/.steamos/offload/*`） |
+| `/var/log`、`/var/tmp`、`/var/cache/pacman`、`/var/lib/{docker,flatpak,…}` | ✅ 也幸存（`var` 下的 offload，较反直觉） |
 | `/etc` | ❌ 被冲（overlay，upper 在 `/var`） |
-| `/usr`、`/var`、pacman 数据库 | ❌ 被冲 |
+| `/usr`、**`/usr/local`**、`/var`、pacman 数据库 | ❌ 被冲 |
+
+> ⚠️ **2026-09-25 纠正**：本表与 README 曾把 `/usr/local` 列为"幸存"，**是错的** ——
+> 实测它是 `/usr` 的一部分（同一 btrfs 子卷），Valve 的 offload 目录里连 `usr/` 都没有。
+> 这条错误一路抄进了 6 处文档（含 §13.4 的演进建议），教训：
+> **"什么会被冲"这种话必须现查**（`findmnt -no SOURCE --target <路径>` 与 `/` 比），
+> 别引用印象；Valve 的清单还会随版本变，所以脚本里该"运行时判断"
+> （正面例子：`install-workbuddy-home.sh` 的 `usrsrc_mount()`）。
 
 ⚠️ **最常见的误判**：以为"装到 `/opt` 就没事"或"`/opt` 也会被冲"。两者都错 ——
 要看的是它的**入口和运行时**在哪：`/usr/bin/<app>` + `/usr` 里的依赖照样会没，
@@ -959,7 +1071,8 @@ findmnt -no SOURCE --target /usr/local
    菜单里只剩个没图的空壳。
 4. **运行时依赖**（electron、自带的浏览器内核等）→ 也放 `~/.local`，
    不要依赖 `/usr` 里的 pacman 包。`:~/.local/bin` 若不在 PATH，桌面项写绝对路径即可；
-   也可在 `/usr/local/bin` 放软链（该目录同样 offload，扛升级）。
+   若 `/usr/local` 是独立挂载(offload)才可在那放软链；**默认不是**（它属于 `/usr`，升级会被冲），
+   所以正路是 `~/.local/bin`（本就在 PATH 里）。
 
 ### 第二步之二：选哪种发行物（deb / AppImage / 官方 tar）
 
@@ -972,6 +1085,9 @@ findmnt -no SOURCE --target /usr/local
 - 实例（2026-09-24）：`deepseek-harness-desktop` 的 deb `Depends: libappindicator3-1,
   libwebkit2gtk-4.1-0, libgtk-3-0` —— SteamOS 全没有；同版本 AppImage 90M 自带这些运行时
   → **选 AppImage**，解压到 `/home`。
+  ⚠️ 该应用还带一个 `resources/version-recommend.json`（写它推荐的内核版本），而上游"已装就
+  优先用已装"的逻辑可能让它去用比 `steamos-setup.sh` 顶部 `DSH_VER` 更旧的 dsh 核心 ——
+  改 `DSH_VER` 前先想清楚（会连带影响插件兼容，见 §3 的 [3] 一节）。
 - **第三种情况：deb 自己就认 `/opt`**。用 range 请求只取 deb 头部（`control.tar.*`
   排在 `data.tar.*` 前面，所以取前 3MB 就够）解出 `control`，看两行：
   `Relocations:` 与 `Installed-Size:`。WPS 的官方 deb 写的是 `Relocations: /opt/kingsoft`
@@ -1004,6 +1120,83 @@ findmnt -no SOURCE --target /usr/local
    非 pacman 装的项还要在 `MENU_CHECK` 注册"是否已装"判据，否则菜单 ✓ 永远不亮。
 2. `check.sh` 加断言 —— **必须断言"安装目标在 `/home` 下"**，否则将来有人改个路径就白做了。
 3. README + 本文件登记（含 rootfs 回收口径的变化）。
+
+---
+
+## 3.11 AppImage 便携化的副作用：`PYTHONHOME` 毒害系统 python（2026-09-25 定案）
+
+**症状**（dsh 桌面版 0.17.1 / dsh 0.1.5-rc.3）：插件安装反复失败、桌面版起不来
+
+```
+gyp ERR! configure error
+gyp ERR! stack Error: Could not find any Python installation to use
+[ELIFECYCLE] Command failed with exit code 1.
+dsh: pnpm failed in profile directory /home/deck/.dsh/profiles/tauri
+```
+
+**别被错误信息骗了**：它**不是**"机器上没装 python"。本机 `/usr/bin/python3`(3.14.6) +
+gcc + make 都齐，在普通 Konsole 里用 dsh 自带的 runtime node + 内置 node-gyp
+编译 node-pty **一次就成功**（实测 exit 0）。
+
+**真凶是 AppImage 运行时注入的环境变量**。dsh 桌面版是 AppImage，type-2 runtime
+（`app/AppRun.wrapped`，二进制里就写着 `PYTHONHOME=%s/usr/`）会**无条件**给整条
+进程树 putenv：
+
+```
+PYTHONHOME=/tmp/.mount_DeepseXXXX/usr/
+PYTHONPATH=/tmp/.mount_DeepseXXXX/usr/share/pyshared/:
+LD_LIBRARY_PATH=/tmp/.mount_DeepseXXXX/usr/lib/:...   （同理）
+```
+
+而那个 mount 目录里**没有 python 标准库**。于是 dsh 进程树里任何 `/usr/bin/python3`
+一启动就：
+
+```
+Fatal Python error: Failed to import encodings module
+ModuleNotFoundError: No module named 'encodings'
+```
+
+退出码 1、**stdout 为空** → node-gyp 探测到的路径是空串 → 报"找不到 Python"。
+（因为这两个变量是 runtime 自己 `setenv` 的，**从外部 unset 无效** —— 除非不用
+AppImage runtime 启动。）
+
+**取证方法（只读，一眼定案）**：
+
+```bash
+PID=$(pgrep -f 'deepseek-harness-desktop$' | head -1)
+tr '\0' '\n' < /proc/$PID/environ | grep -E 'PYTHON|LD_LIBRARY'
+```
+
+**解药（`fix-dsh-node-pty.sh`，三层，前两层是主力）**：
+
+1. **把编译产物放进 `prebuilds/linux-x64/pty.node`** ← 关键。node-pty 官方**不发
+   Linux 预编译包**（`prebuilds/` 里只有 darwin-* 和 win32-*），而它的 install 脚本是
+   `node scripts/prebuild.js || node-gyp rebuild`。该目录一旦存在，`prebuild.js`
+   直接 `exit 0`，**node-gyp 永不参与** → 以后 dsh 每次启动重跑安装都不再需要 python。
+   ⚠️ 编译必须用 **dsh 自己的 runtime node**（`~/.local/share/dsh-tauri/runtime/bin/node`），
+   否则 ABI（22.x vs 系统 26.x）对不上，dsh 加载时会崩。
+2. **放 `~/.local/bin/python3` 包装器**兜底（万一 prebuilds 被冲、必须现场编译）。
+   它清掉"指向不存在的 Python 安装"的 `PYTHONHOME/PYTHONPATH`。
+   ⚠️ **坑**：node-gyp 会把探测到的**绝对路径**记下来，之后直接 `exec` 它、不再走
+   PATH —— 若包装器回答 `/usr/bin/python3` 就被绕过（实测确认）。所以包装器必须对
+   "探测 `sys.executable`"那条命令回答**自身路径**。node-gyp 12 的探测串是
+   `sys.stdout.buffer.write(sys.executable.encode('utf-8'))`，11 是 `print(sys.executable)`，
+   按"`-c` + 参数里含 `sys.executable`"匹配才两个版本都覆盖。
+3. 放行 pnpm v11 的构建脚本拦截（`allowBuilds.node-pty`，见下）。
+
+**顺带纠正一条旧认知**：pnpm v11 的 `.npmrc` 已不读 `onlyBuiltDependencies` 这类设置，
+只能写 `pnpm-workspace.yaml` 或全局 `~/.config/pnpm/config.yaml`；键名是 `allowBuilds`。
+dsh 自己会往 profile 的 `pnpm-workspace.yaml` 里写 `allowBuilds`，所以那层通常已经过了 ——
+**如果日志里已经不再出现 `[ERR_PNPM_IGNORED_BUILDS]`、只剩 gyp 的 python 报错，说明
+卡的就是本文这条，别再往 pnpm 配置上找。**
+
+**复发条件**：插件大版本更新会重建 `node_modules` → `prebuilds/linux-x64` 丢失 → 复发。
+所以病根没除、只是被绕开；**dsh 大版本升级后跑一次 `bash fix-dsh-node-pty.sh --check`
+即可（只读、秒级）**。
+
+**同类风险提醒**：凡是"AppImage 启动的进程里要调用系统 python/node 工具链"的场景，
+都可能踩同一个坑（`PYTHONHOME`/`LD_LIBRARY_PATH` 污染）。判断口诀：
+**普通终端里能跑、AppImage 里跑不了 → 先查 `/proc/<pid>/environ`。**
 
 ---
 
@@ -1215,6 +1408,15 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
 
 ---
 
+### 9.5 pre-commit 钩子：文档说"强制"，就得真装（2026-09-25 发现并补上）
+`hooks/pre-commit` 一直躺在仓库里（提交前跑 `check.sh`，不过即拒绝提交），但 **`.git/hooks/pre-commit` 并不存在** ——
+git 不跟踪 `.git/hooks`，所以每个 clone 都必须自己启用一次：
+```bash
+git config core.hooksPath hooks    # 指向受版本控制的 hooks/ 目录, 最省事且不会漂移
+```
+- `check.sh` 第 4 节会检查它是否生效，并打印这条命令（不判失败：全新 clone 没配也正常）。
+- 教训同类：**"文档声称的机制"必须有一条能失败的判据去核**（本项目已经栽过 6 次：假绿灯 5 + 这条"写着没装"）。
+
 ## 10. 架构现状与优化路线图（2026-09-25 全项目回顾）
 
 ### 10.1 现状量化（实测数字，不是印象）
@@ -1238,6 +1440,8 @@ bash verify-upstreams.sh --quick    # 跳过 archlinuxcn 大文件
 | 3 | **步骤表驱动**：一张 `STEPS` 表定义「函数名 / 编号 / 关键词 / 标题 / 落地判据」，让 `step_label`、`map_step`、`FUNCS`、help 全部由表派生 | 加一个步骤从**改 9 处**变成**改 1~2 处**，不会再漏接注册点（历史上 README 步骤列表、本节的步骤表都曾漏更新） | 动主脚本的核心分发逻辑；`verify_step` 是函数式判据，可能只能半自动化 | 收益高，风险中等 |
 | 4 | ~~两份 README 归一~~ **已完成（2026-09-25）**：`README.txt` → `使用说明.txt`，顶部加一句"详细版用法，概览看 README.md"；README.md / 本文件 / 重装流程.md 的指向同步更新 | 消除"两份说明书"的漂移 | — | **结案** |
 | 5 | 自愈清单 `CHECKS` 与步骤落地物是**两处重复的知识**（已有 `check.sh` 断言兜底） | 理论可派生 | 抽象成本大于收益 | **建议不做**，保持断言 |
+| 6 | **统一入口 `steamos.sh`：一张注册表派生菜单/清单/帮助/分发** | 消除"该跑哪个"的查找成本；加脚本只改一行 | — | **已完成（2026-09-27 v3.10.0）**，见 §1.5。可被断言校验（注册表↔文件双向一致） |
+| 3（续） | **主脚本步骤表驱动**（把 #3 落到 `steamos-setup.sh` 内部） | 加一个步骤从"改 9 处"变成"改 1~2 处" | 动主脚本核心分发逻辑；`verify_step` 是函数式判据，可能只能半自动化 | **仍开放**。#6 证明了"表驱动 + 断言兜底"这条路可行，可照此推进 |
 
 ### 10.3 已决定不做（记录理由，免得反复讨论）
 
@@ -1272,3 +1476,810 @@ for f in "$src"/scripts/*.py; do ...
 - `okww-readme.md`（147 行）—— 是**另一个项目**（ok-ww，鸣潮自动化程序）的 README 全文，
   从首个提交就在、无人引用、带着人家的 logo / badge / 链接。仓库公开后放这个不合适，
   **已删除**（可恢复：`git checkout 2ad0e9a -- okww-readme.md`）。
+
+## 11. 2026-09-25 全量重装实测复盘（GPD Win5 真机跑 15 步 + 可选组件）
+
+当天新装一遍，日志里蹦出 6 条 `[!]`/`[✗]`。逐条查完的结论：**3 条是真故障（已修），
+3 条是判据/输出误导（已修，属于"假故障"）**。以后看到同类输出别再重新排查一遍。
+
+### 11.1 假故障①：AUR 构建里一屏 `asar extract ENOENT` —— 无害，别慌
+现象：构建 workbuddy 时刷出 15 行 `Unable to extract some files: ENOENT ... arm64-darwin/rg`、
+`better-sqlite3/build/Release/better_sqlite3.node` 等，随后 `Node.js v26.5.0` 退出，但
+makepkg 照样把包建完、装上去了（装完 766MiB）。
+**真相**：`app.asar` 的头表里把跨平台条目标成 `unpacked`，而网易/腾讯发的 deb **只带
+x64-linux 那套**，其余平台本来就不存在。asar 一边报 ENOENT 一边 exit 1，PKGBUILD 容错继续。
+**怎么判"主体是不是真的完好"**（比看日志靠谱）：看这几个实体在不在 ——
+```bash
+ls /opt/WorkBuddy/app.asar.unpacked/cli/vendor/ripgrep/x64-linux/rg     # 有
+find /opt/WorkBuddy -name 'better_sqlite3.node' -o -name '*.node' | head # prebuilds/linux-x64.node
+```
+本机实测全在，且 `ps` 里 WorkBuddy 跑的就是 `electron /opt/WorkBuddy/app.asar.unpacked`。
+**⚠️ 注意本体布局**：AUR 版把 app.asar **解成目录**用，所以 `/opt/WorkBuddy/` 下**只有
+`app.asar.unpacked/`**，没有 `app.asar`。看着"少东西"是正常的（wrapper 直接吃这个目录）。
+
+### 11.2 真故障①：`/usr/include` 被镜像裁掉 → 所有"要编译 C"的 AUR 包必挂
+现象：`paru -S wechat-universal-bwrap` 死在
+`make: *** [Makefile:9：libuosdevicea.so.unstripped] 错误 1`，往上翻是
+`fatal error: string.h：没有那个文件或目录`。
+**定性**：`/usr/include` 只剩 18 个条目，glibc 文件清单上 **510 个头文件实体一个不剩**；
+`pacman -Q glibc` 却说"已装" → **只装 gcc/make 补不回来**。
+修：`ensure_c_headers()`（步骤[3] 工具链之后调用）——
+```bash
+_sv="$(pacman -Sp --print-format '%v' glibc | head -1)"   # pacman 真会装的那个仓库版本
+[ "$(pacman -Q glibc|awk '{print $2}')" = "$_sv" ] && pacman -S --noconfirm glibc linux-api-headers
+```
+- **必须同版本**：快照源 `core-3.9` 的 glibc = 本机 2.43+r37（已装同版，重装零风险）；
+  滚动源 `core` 已经是 **2.44** —— 顺手装了就是把 libc 顶到比系统新，部分升级有炸机风险。
+  所以脚本先比版本，不一致就**只警告不动手**。
+- **验证过**（不是猜的）：把同版本 glibc 的 `usr/include` 解出来，`gcc -isystem ... -fPIC -shared
+  libuosdevicea.c` → `rc=0`，产出正常 ELF。所以 WeChat 那条路只剩"重装头文件"这一步。
+- 同理会咬 `可选组件 NextKde`（要编译）—— 修好头文件是它和微信的共同前置。
+- 兜底取源（快照源万一没有）：`https://archive.archlinux.org/packages/g/glibc/glibc-<ver>-x86_64.pkg.tar.zst`
+
+### 11.3 真故障②：自愈 user 服务"文件齐了但从没启用"
+现象：`[!] 启用 user 服务失败(可能缺 linger...)`，而 `loginctl show-user deck` = `Linger=no`、
+`systemctl --user is-enabled steamos-self-heal` = `disabled`。
+**根因**：脚本以 root 跑，却用 `su - $REAL_USER -c "systemctl --user enable ..."` —— 从 root 的
+su 会话里常常没有 `XDG_RUNTIME_DIR`/bus，连不上该用户的 user manager，再被 `2>/dev/null`
+一吞就成了"看着执行了、其实没启用"。实测 `default.target.wants/` 里只有 `gamemoded.service`。
+**修法**：`enable` 的本质就是往 WantedBy 目标目录放一个相对软链 —— 直接建链最可靠：
+```bash
+ln -sfn "../steamos-self-heal.service" "$REAL_HOME/.config/systemd/user/default.target.wants/steamos-self-heal.service"
+loginctl enable-linger "$REAL_USER"     # 游戏模式不启 KDE 会话, 没 linger 就不跑
+```
+并把 `verify_step(setup_selfheal)` 加上 wants 软链判据（**单元文件在 ≠ 单元已启用**）。
+
+### 11.4 假故障②：`LocalSend 落地复核未通过` —— 判据错了，东西是好的
+现象：`[✓] 已放行(permanent)` 之后紧跟 `[!] 14 LocalSend 退出正常但落地复核未通过`。
+**根因**：SteamOS 出厂 `public` zone 就开了 **1024-65535/tcp+udp**，53317 本来就在范围内。
+此时 `firewall-cmd --add-port` 会判 `ALREADY_ENABLED` 而**不写盘**（退出码仍是 0）→
+`/etc/firewalld/zones/public.xml` 里**永远找不到字面量 53317**，而旧判据偏偏 grep 它。
+后果不只是白报一次：`step[14]` **永远不记进度**（每次重跑都重下 63MB AppImage），
+自愈清单那条 `fwport` 还每次开机报一次"缺失"。
+**定案判据** `fw_53317_ok()`：显式规则 → `--permanent --list-ports` 含 `1024-65535` → 兜底
+`--permanent --query-port=53317/{tcp,udp}`（`--query-*` 会认范围规则）。**主脚本与
+`self-heal-after-upgrade.sh` 两处同一套判断，改一处必须同步另一处。**
+
+### 11.5 真故障③：Decky 预置插件一个都没装上（列表写法就错了）
+现象：日志只有一条 `[✗] 商店里没有名为 SteamGridDB ProtonDB Badges 的插件`，
+而 `~/homebrew/plugins/` 里**只有 SimpleDeckyTDP**。核对商店 API（110 个插件）确认
+`SteamGridDB` 与 `ProtonDB Badges` 名字都对（大小写敏感）。
+**根因**（老写法 `for _pl in ${DECKY_PLUGINS-"SteamGridDB ProtonDB Badges"}`）：
+1. **`ProtonDB Badges` 自带空格** —— 空格分隔的列表根本表达不了这个名字，会被拆成三个词去查商店；
+2. `DECKY_PLUGINS=""`（已设置但为空）时 `${VAR-def}` 取的是**空值**而非默认 → 循环 **0 次且一声不吭**
+   （实测：`DECKY_PLUGINS=; for p in ${DECKY_PLUGINS-"A B"}; do ...` 什么都不输出）。
+**修法**：默认用数组 `_plugins=(SteamGridDB "ProtonDB Badges")`；显式置空 = 跳过并有提示；
+自定义改用 **`|`** 分隔：`DECKY_PLUGINS='Decky Localsend|ProtonDB Badges'`。
+`check.sh` 的断言也同步改成查数组写法（原来那条 grep 老字符串，会拦住修复）。
+
+### 11.6 root 属主污染：装进 /home 的东西属主是 root → 用户自己再也修不动
+实测 `~/.cache/{harmony-sans,glow,localsend,firefox-nightly,dsh-desktop}`、
+`~/.local/bin/{glow,firefox-nightly,deepseek-harness-desktop}`、
+`~/.local/share/fonts/harmonyos-sans-sc`、`~/.config/fontconfig/conf.d`、`~/.local/opt/steamos-self-heal`
+全是 `root:root`。**直接后果**：鸿蒙字体脚本第二次运行时
+`mkdir: 无法创建目录 "~/.cache/harmony-sans/.stage.xxx": 权限不够` —— 用户自己也修不动。
+**修法**：`fix_home_owner()`（主脚本全量跑完调用）+ `可选组件安装.sh` 的同名收尾，
+只扫脚本碰过的路径（不对整个 `/home` 递归 —— 会扫到 Steam 的几十万文件）。
+若已污染，手工清一次：`sudo chown -R deck:deck ~/.cache/harmony-sans ~/.local/share/fonts ~/.config/fontconfig`。
+
+### 11.7 假故障③：`最小集未让 base-devel 判定通过`
+`pacman -Qq base-devel` 是**整组**查询，最小集必然缺组内成员（autoconf/bison/texinfo…），
+于是每台机器都白报一次。改成**逐包**确认 `$BD_MIN` 六件套，缺哪个点名报哪个。
+
+### 11.8 顺带纠正两条老注释（挂载实况变了，别再按老印象写）
+- **`/var/cache/pacman` 在 p8（918G 那块）**：`df -h` 实测 → 它**不占 rootfs**，
+  清它对 5GB 的 p5 毫无帮助（老注释里"已 offload"是对的）。
+- **`/etc` 是 overlay（230M 容量 / 42M 已用）；`/var` 在 p7（230M）**。
+- ⚠️ **pacman 数据库不在 `/var/lib/pacman`**：3.9 的 `pacman.conf` 写的是
+  `DBPath = /usr/lib/holo/pacmandb/` → **在 rootfs 里，跟 `/usr` 一起被原子升级整块换掉**。
+  所以 `verify_step` 注释里"数据库在 p7 幸存、会与文件脱节"的**理由已经过时**（双判据本身保留，仍然是对的）。
+- rootfs 实测：装完 15 步后 **`/` 4.1G/5.0G = 93%，仅剩 349M**（`Device unallocated` 只有 1MiB）。
+  这次的增量主要是 electron43 + nodejs + 编译工具链（≈470M）。要回收跑 `bash free-rootfs.sh`
+  看方案再 `--apply`（本轮未执行）。
+
+### 11.9 ✅ 已解：自愈免密**确实生效**（2026-09-25 20:50 复查），且旧判据本身是错的
+
+当时的疑问：`sudo -n /usr/bin/bash <备份包>/steamos-setup.sh --status` 报"需要密码"，与步骤[12]
+"免密已写入并通过 visudo 校验"矛盾。**现在结论**：
+
+- `/etc/sudoers` **确实 include 了 `/etc/sudoers.d`**（`sudo -n -l` 能列出 `sudoers.d/wheel` 等
+  Valve 自带文件带来的规则；那些文件若不被 include 就毫无作用）。
+- **免密生效的铁证**：先 `sudo -n true` 确认**没有**缓存的 sudo 时间戳（报"需要密码"），
+  再跑 `sudo -n bash <MAIN> --after-upgrade` → **成功执行**。既然没有时间戳也能过，就是 NOPASSWD 命中。
+  `sudo -n -l` 的输出里能看到最终三条规则：
+  ```
+  (ALL) NOPASSWD: /home/deck/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh
+  (ALL) NOPASSWD: /usr/bin/bash /run/media/.../steamos-setup.sh
+  (ALL) NOPASSWD: /usr/bin/bash /run/media/.../steamos-setup.sh *
+  (ALL) NOPASSWD: /usr/bin/bash /run/media/.../fix-missing-dev-files.sh      ← v3 新增
+  (ALL) NOPASSWD: /usr/bin/bash /run/media/.../fix-missing-dev-files.sh *
+  ```
+- ⚠️ **旧判据错在哪**：`sudo -n -l <某个命令>` 判不出 NOPASSWD —— 本机有 Valve 的
+  `%wheel ALL=(ALL) ALL`（清单里的 `(ALL) ALL`），于是**任何**命令查询都能"匹配"并返回 0，
+  sudo 还会把查询的命令原样回显，看着像"允许"。**正确判法只有一条**：拉全量
+  `sudo -n -l`（不带命令参数），再按**命令行里的路径**去认那几行 `NOPASSWD`。
+  这个判法已固化进 `diag-sudo-selfheal.sh`（只读, `sudo bash diag-sudo-selfheal.sh`）。
+- 至于当初那条 `--status` 为什么会要密码：规则用的是**安装时的绝对路径**，备份包挪过位置
+  （或探测发生在步骤[12] 写规则之前）就会失配。现在的 diag 脚本会直接把这种失配报出来，
+  并给出修法 `sudo bash <MAIN> 12`（按当前路径重写规则）。
+
+---
+
+## 12. SteamOS 把 /usr 的开发文件裁掉了 —— "要编译就报缺"的系统性拦路虎（2026-09-25 实测）
+
+**现象**：凡是走到"要编译"的步骤（NextKde 的 kosctl cmake、要编译 C 的 AUR 包…）必然报缺，
+且报的是"文件不存在"而不是"包没装"：
+```
+Could not find a package configuration file provided by "Qt6"
+fatal error: string.h / zlib.h: 没有那个文件或目录
+```
+同时 `pacman -Q <pkg>` 说"已装"、`pacman -Ql <pkg>` 也老老实实列得出这些文件。
+
+**根因（重要：这不是升级事故，是镜像常态）**
+Valve 基础镜像把"开发用"文件摘掉了，**但 pacman 数据库仍保留完整清单** → DB 与磁盘长期不一致。
+本机实测（已补过 qt6-base/qt6-declarative 之后的状态，所以实际只会更多）：
+- `/usr/include`：DB 里 31088 个文件，**22619 个磁盘上不存在**；
+- `.cmake` / `.pc`：8404 条里缺 **3986** 条；
+- 单包视角：kwin 缺 315、kio 缺 252、qt6-base 补之前几乎整包缺（它的清单有 4700+ 条）。
+
+**裁掉的边界（实测确认，别多补也别少补）**
+| | 内容 |
+|---|---|
+| ✗ 被裁 | `usr/include/**`、`usr/lib/cmake/**`、`usr/lib/pkgconfig/*.pc`、`usr/share/locale/**`、`usr/share/doc/**` |
+| ✓ 保留 | `usr/lib/*.so` **开发符号链接全在**（`libKF6ConfigCore.so`/`libz.so` 都在）、运行时库、`usr/share/ECM`（extra-cmake-modules 完好）、`usr/lib/qt6/mkspecs` |
+
+**修法：`fix-missing-dev-files.sh`**
+```bash
+bash fix-missing-dev-files.sh                  # 只读体检, 列出缺开发文件的包
+sudo bash fix-missing-dev-files.sh --apply     # 默认补 kde/qt6 集合(实测 160 包/9300 文件级)
+sudo bash fix-missing-dev-files.sh --apply --set all   # 全系统扫修(更慢更多)
+```
+默认走"**只从 .pkg.tar.zst 里抽出那三类开发文件写回 /usr**"（`bsdtar -tf` 出成员清单 → `bsdtar -xf -T`）：
+不覆盖运行时库、不把 locale/doc 带回来（省掉 ~90% 体积）、不参与 pacman 事务 → 风险≈0。
+`--full` 才退化成 `pacman -U --overwrite='*'` 整包重装（连 locale/doc 一起回来）。
+
+**实测结果（2026-09-25 19:30，GPD Win5）**
+- `sudo bash fix-missing-dev-files.sh --apply`（默认 kde/qt6 集合）跑完：**160 个包 / 9322 个文件补齐，
+  rootfs 只少了 13 MiB**（601→588 MiB）。对比整包重装会带回几百 MB 的 locale/doc —— 这就是选择性抽取的价值。
+- 事后 `--set kde` 复检：**没有缺失**；`/usr/include/{zlib.h,X11/Xlib.h,kwin/effect/effect.h}`、
+  `KWinConfig.cmake`、`KF6ConfigConfig.cmake` 全部就位 → kosctl 的 `find_package` 链不再报缺。
+- 全系统 `--set all`（扫 1255 个包，**19 秒**）：仍有 **507 个包 / 17393 个文件**缺开发文件
+  （x264/x265/ffmpeg/zstd/xz/xorgproto/zeromq/udisks2/upower 这些音视频与系统库）。
+  对 KDE/Qt 构建无影响；哪天要编 ffmpeg 依赖的 AUR 包再跑 `--set all` 即可。
+- ⚠️ **边界：个别包补不了**。`libwireplumber` 本机 0.5.15-1.2 而仓库已 0.5.17-1.1，`wireplumber` 锁着旧版 →
+  `pacman -Sp` 直接报"破坏依赖"。这类包**只能等系统整体升级**，脚本会识别并明确跳过（别手贱抄单包 `pacman -U`）。
+  注意 `pacman -Sp --print-format` 的**第一行可能是这种 `::` 信息行**，取版本号必须按包名精确匹配，不能用 `head -1`。
+
+**⚠️ 判据教训：dev 文件是"按包"的，但 CMake 是"按文件"找的（2026-09-25 踩）**
+补完 libx11 后 `find_package(X11)` 仍报 `missing: X11_X11_INCLUDE_PATH`，而 `/usr/include/X11/Xlib.h` 明明在。
+原因：CMake 的 `FindX11.cmake` 第一个查的是 **`X11/X.h`**（`find_path(X11_X11_INCLUDE_PATH X11/X.h)`），
+而 `X.h` / `keysym.h` / `Xatom.h` 属于 **`xorgproto`**，不属于 libx11。
+`libx11` 的 dev 文件一个不缺、`xorgproto` 却缺 129 个 → 只看"我补过的包全齐"会得出错误结论。
+- **教训**：报 `Could NOT find Xxx (missing: ...)` 时，去 `/usr/share/cmake/Modules/FindXxx.cmake` 里
+  读出它真正 `find_path` 的**那个文件名**，再 `pacman -F`/`pacman -Ql` 反查属于哪个包 —— 别按包名猜。
+- 复现/验证手法（不需要 root，也不动系统）：`pacman -Sp <pkg>` 拿 URL → `curl` 到 /tmp →
+  `bsdtar -tf/-xf -T` 抽到临时树 → 用 `CMAKE_INCLUDE_PATH=<临时树>/usr/include cmake …` 验证 find_package 变绿。
+  本轮就是这样确认"补 xorgproto 就能过 FindX11"的（`R=FALSE → R=TRUE`）。
+- 默认集合已扩成两组：① 通用 C/C++/X11/Wayland 基础；② **CMake Find 模块最常探的库**
+  （xorgproto / xz / zstd / bzip2 / libarchive / gmp / nettle / gnutls / krb5 / libcap / pcre /
+  python / gettext / double-conversion / lz4 / libdeflate / libpsl / libssh2 / libidn2 / libunistring …）。
+  2026-09-25 19:50 实测：新默认集合待补 **29 个包 / 737 个文件 / 下载约 29 MB**（rootfs 代价按 9322 文件≈13 MiB 折算只需个位数 MiB）。
+
+**⚠️ 包文件名不能拼死 `-x86_64`（2026-09-25 19:51 真机第一次跑就踩）**
+脚本原本用 `$CACHE/$pkg-$repo-x86_64.pkg.tar.zst` 找缓存文件，于是 **`arch=any` 的包永远"找不到"**：
+`xorgproto` 的实际文件名是 `xorgproto-2025.1-1-any.pkg.tar.zst` → 被误报"下载失败"跳过 ——
+而它偏偏是 `FindX11` 的必需项，等于白跑一轮。现改为从 `pacman -Sp <pkg>` 解析出的 URL 里
+按**包名开头**精确取 basename（URL 里第一行可能是依赖的 URL，也要挑），下完再用
+`$CACHE/$pkg-$repo-*.pkg.tar.zst` 兜底。
+- 实测本机剩余集合里 `arch=any` 的有 4 个：`xorgproto`、`fwupd-efi`、`gsettings-desktop-schemas`、`ibus-table`
+  —— 下次补它们时不会再跳过。
+- 自测钩子：`FIXDEV_CACHE=<目录> bash fix-missing-dev-files.sh --apply --dry-run --pkgs xorgproto`
+  可拿"替身缓存目录"验证这条路径解析（放一个 `…-any.pkg.tar.zst` 进去，看它是否认出正确文件名）。
+
+### ★ 预检法：不动系统就把整条编译链验穿（比"改一次、贴一次报错"快一个数量级）
+把待补包的开发文件抽到一个**临时前缀**，然后让 cmake 同时搜系统与临时树 —— 缺哪个包会一次暴露，
+且**整条 configure/编译都能先在本机跑通，再让用户动手**：
+```bash
+# ① 抽开发文件到 /tmp/devstage（与脚本的 DEV_RE 同一套规则，从 pacman 缓存或 URL 取包）
+# ② 用临时前缀配置 + 编译（CMAKE_PREFIX_PATH 走 config 模式, INCLUDE/LIBRARY_PATH 走 find_path/find_library）
+cmake -S /home/deck/.local/opt/NextKde -B /tmp/nk-cfg -G Ninja \
+      -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX=/usr \
+      -DKOS_BUILD_KWIN_PLUGINS=ON -DBUILD_TESTING=OFF \
+      -DCMAKE_PREFIX_PATH=/tmp/devstage/usr \
+      -DCMAKE_INCLUDE_PATH=/tmp/devstage/usr/include \
+      -DCMAKE_LIBRARY_PATH=/tmp/devstage/usr/lib
+ninja -C /tmp/nk-cfg -j6
+```
+2026-09-25 实测：NextKde 在"系统仅补过 kde 集合 + 临时树里只有 libepoxy"的条件下
+**configure 通过 + `ninja` 33/33 全绿（BUILD_RC=0，含 KWin 特效插件与 kos-platform）**。
+→ 结论：kde 集合之外，NextKde 真正还缺的**只有 `xorgproto` 与 `libepoxy` 两个包**。
+- `libepoxy`：`KWinConfig.cmake:50 → find_dependency(epoxy)` → ECM 的 `Findepoxy.cmake` 要 `epoxy/gl.h`
+  → 缺了报 `Could NOT find epoxy (missing: epoxy_INCLUDE_DIRS)`（已加入默认集合）。
+- 这套预检法同样适用于任何"CMake 报缺"的第三方项目：**先在临时前缀里把缺的包找齐，
+  再让用户在真机上一次性 apply**，能省掉多轮往返。
+
+### ★ 升级后自动恢复链（v3，2026-09-25 定稿）：`self-heal-after-upgrade.sh` + 步骤[12]
+原子升级后的自动恢复由三块拼成，缺一块就会"看着恢复了、其实没恢复"：
+
+| 块 | 落点 | 扛升级 | 作用 |
+|---|---|---|---|
+| 自愈脚本 v3 | `$HOME/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh` | ✅ /home | 开机跑：版本变化检测 + 落点清点 + **开发文件清点** + 自动恢复 |
+| user 服务 | `~/.config/systemd/user/steamos-self-heal.service` + `default.target.wants/` 软链 | ✅ /home | 触发（**文件在 ≠ 已启用**，判据要查软链，见 §11.3） |
+| 免密规则 | `/etc/sudoers.d/zz-steamos-self-heal` | ❌ /etc | 让上面两块能免密调主脚本；**升级必被冲 → 首次恢复要手动一次** |
+
+- **开发文件清点（v3 新增）**：原子升级同样会摘掉 `/usr` 的 include/cmake/pkgconfig（§12 的根因），
+  表现是"以后编译任何东西都莫名报缺头文件"，平时完全无感。v3 用**便宜哨兵**
+  （`/usr/lib/cmake/Qt6/Qt6Config.cmake`）探一下，只有"**包在而文件不在**"（`pacman -Qq qt6-base` 成立）
+  才叫 `fix-missing-dev-files.sh --set kde` 做全量体检 —— 不装 qt6 的机器不误报，也不在开机路径上白花 20 秒。
+  检测到缺失就 `sudo -n bash <补齐器> --apply --set kde` 自动补回来。
+- 免密规则必须**同时**放行补齐器（两条：不带参 / 带 `*`），并且步骤[12] 的**判定与落地复核都要认识这条**，
+  否则老机器会走 info 分支永远补不上（这次就是踩了这个：只查 `steamos-setup.sh` 的话，
+  已装机的规则不会重写）。改动清单：`DEV_ABS` 变量、`DEV_RULES` 条件、heredoc 两行、
+  `verify_step(setup_selfheal)` 多一条 `grep -qs 'fix-missing-dev-files'`。
+- **排查工具**：`sudo bash diag-sudo-selfheal.sh`（只读）一次查清——include 有没有、
+  sudoers.d 里哪些文件被 sudo 忽略（组/他人可写）、规则里的路径是否还对得上当前备份包、
+  三条 NOPASSWD 是否都在。**不用它就只能靠猜**（这正是 §11.9 悬了好几天的原因）。
+- ⚠️ **判定 NOPASSWD 只能拉全量 `sudo -n -l`**，别用 `sudo -n -l <命令>`：本机有 `%wheel ALL=(ALL) ALL`，
+  任何命令查询都会匹配成功并原样回显，看着像允许（实测：连 `/tmp/nonexistent.sh` 都返回 0）。
+
+#### 游戏模式（本机大多数时间）下到底能不能自动唤起？——**能**，但有三个坑，v4 都堵了
+实测证据（2026-09-25，全部在本机验过）：
+- **会触发**：桌面模式与游戏模式都会走到 user manager 的 `default.target`。
+  `systemctl --user list-dependencies default.target` 里直接能看到 `steamos-self-heal.service`；
+  Valve 自己的 `gamemoded.service` / `dmemcg-booster-user.service` 同样是 `WantedBy=default.target`
+  —— 而游戏模式离不开 gamemode，所以这条链必然被拉起。再加上步骤[12] 的
+  `loginctl enable-linger`（不登录图形会话也起 user manager），双保险。
+- **定时器真的会被排上**：用户 timer 用 `WantedBy=timers.target`，而 `timers.target` 自己是
+  `WantedBy=basic.target`、`default.target` `Requires=basic.target` → 每次 user manager 起来都会拉起它。
+  实测 `systemctl --user list-timers`：`NEXT=+19min`、`last trigger` 刚刚。systemd 自带的 user timer
+  （tmpfiles-clean / podman-auto-update / drkonqi-*）用的是同一套机制。
+- 坑① **开机瞬间没网**：游戏模式一上来就是 gamescope UI，Wi-Fi 常常还在连；主脚本 prepare 要
+  `pacman -Sy`/装包，没网必失败。v4 动手前先 `wait_online()`（优先 `nm-online -q -t 5`，
+  兜底 HTTP 探上游镜像，最多 120 秒），等不到就**静默交给定时器** —— 不算失败、不写标记、不推进版本戳。
+- 坑② **游戏模式没有通知守护**：镜像里只有 plasmashell 提供 `org.freedesktop.Notifications`
+  （`ls /usr/share/dbus-1/services | grep -i Notif` 只有 KDE 那条）→ 游戏模式里 `notify-send` 是**哑的**。
+  所以失败必须靠①看得见的文件 `~/.local/opt/steamos-self-heal/NEEDS-ATTENTION.txt`
+  （内含两条可直接粘的命令）②journal ③定时器持续重试；等切回桌面模式时才会补一次真通知。
+- 坑③ **oneshot 只跑一次**：原来失败就等下次开机 → 现在定时器每 20 分钟重试；
+  服务在"无事可做"时实测 **0.5 秒**秒退，所以 20 分钟一次的轮询在游戏模式挂着也没有可感开销。
+
+### 撤回 NextKde（2026-09-25 实测：`kosctl uninstall` 在无免密 sudo 的会话里跑不完）
+用户决定不装它之后，实操踩到两件事，记下来免得下次再犯：
+1. **卸载顺序不能反**：必须**先还原 `plasmashellrc` 的 `[Shell] ShellPackage`，再删外壳包**
+   （上游注释写明：键还指着已删的包时，plasmashell 启动会 "starting invalid corona"，
+   表现是**没壁纸没面板**）。没有 `~/.local/share/kos/plasma-shell-state` 时上游也是**删键**
+   （`kwriteconfig6 --file plasmashellrc --group Shell --key ShellPackage --delete` → 回落 Plasma 默认外壳）。
+2. **`kosctl uninstall` 第一步就要 sudo 删 `/usr` 里的 KWin 插件**（读 `kwin-system-files.manifest`），
+   在没免密 sudo 的会话里会卡在密码提示、**在还原 ShellPackage 之前就退出**（rc=1）→ 桌面处于
+   "键指向 KOS、包还在"的半状态。所以：要么在真机 Konsole 里跑（能输密码），要么手工按
+   ①键 ②外壳包 ③user 单元 ④二进制/桌面项/配置 的顺序做，`/usr` 那几个文件最后单独 sudo 删。
+3. **查系统残留别设 `-maxdepth`**：`/usr/lib/qt6/plugins/kwin/effects/plugins/*.so` 在第 5 层，
+   用 `-maxdepth 4` 会扫成"没有"而漏报；而且其中的 `glass.so` **不带 kos 前缀**，只看文件名认不出来，
+   得对着 `kwin-system-files.manifest` 核。KOS 在系统侧一共 5 个文件：
+   `kwin/effects/plugins/{glass,kos_context_menu_input,kos_dock_window_animation}.so`、
+   `kwin/effects/configs/kwin_glass_config.so`、`qt6/qml/Kos/SurfaceShape/libkos_surface_shape.so`。
+4. 卸载不影响正在用的会话：`kosctl install` 只改 `plasmashellrc` 的键，**要等 plasmashell 下次启动才切换**；
+   所以删包时当前桌面（若仍是原版 Plasma）完全不受影响，下次登录即回到普通 Plasma。
+5. 用户级落地物清单（手工撤回时按这个核）：`~/.local/share/plasma/shells/org.kos.desktop`、
+   `~/.config/quickshell/kos`、`~/.local/state/quickshell/kos`、`~/.local/state/quickshell/shell-data-service`
+   （Quickshell 的数据服务状态，里面会留 `kos-settings` 字样）、`~/.local/share/kos`、
+   `~/.local/share/shared/qml`、`~/.config/plasma-org.kos.desktop-appletsrc`、
+   `~/.local/bin/kos-settings`、`~/.local/libexec/kos-{platform,data-service}`、
+   `~/.config/systemd/user/kos-{shell,platform,data}.service`、`~/.local/share/applications/{kos-settings,org.kos.Platform}.desktop`、
+   `~/.local/opt/NextKde`(源码树 118M)、kwinrc 的 `[Effect-kos_dock_window_animation]` 组。
+6. ⚠️ **`kwin-system-files.manifest` 不等于完整文件清单**：它只记了 5 个 `.so`，
+   而 `/usr/lib/qt6/qml/Kos/SurfaceShape/` 里还有一个 `qmldir`（`module Kos.SurfaceShape` + `plugin kos_surface_shape`）
+   → 只删 manifest 里的东西，`rmdir` 会因"目录非空"失败。**手工撤回时 `rmdir` 别吞 stderr**
+   （否则看不出原因），收尾必须 `find <目录>` 确认还剩什么。那个孤儿 `qmldir` 也得删，
+   否则 QML 扫到该模块会去找已不存在的插件。
+
+**版本安全闸（这条最要命，别绕过）**
+SteamOS 的固定仓库 `*-3.9` 与本机版本对齐（qt6 6.11.1 / KF6 6.28.0 / KWin 6.7.3），
+而滚动仓库 `core`/`extra` 已经更新（6.11.2 / 6.30.0 / 6.7.5）→ **`pacman -Sy` 之后再装就是部分升级**，
+会拆掉 KDE/KWin 的 ABI。pacman.conf 里 `*-3.9` 排在前面，`pacman -Sp --print-format '%v'` 取到的是
+固定快照版本；脚本比对"去 pkgrel 后的版本号"，不一致就拒绝并要求 `--allow-bump`。
+> 注意 kwin 本机 `6.7.3-1.5` vs 仓库 `6.7.3-1.6` 只差 pkgrel（Valve 重建），**允许**；
+> 差在 `6.7.3` → `6.7.5` 就必须拒。
+
+**手工等价做法**（只补单个包时）：
+```bash
+sudo steamos-readonly disable        # 重启自动回只读
+sudo pacman -Sw <pkg>
+sudo pacman -U --overwrite='*' /var/cache/pacman/pkg/<pkg>-<ver>-x86_64.pkg.tar.zst
+```
+代价是连 locale/doc 一起装回来（体积大得多），所以只在脚本默认模式补不上时才用。
+
+**影响面记住两点**
+1. 原子升级后**每次都要重补**（/usr 被整个换掉）—— 跑 `bash fix-missing-dev-files.sh` 看缺什么即可；
+2. 任何"要编译"的新需求（AUR 包、桌面插件）先跑一遍这个体检，比 cmake 报错后再猜快得多。
+
+---
+
+## 13. 2026-09-25 健壮性审查（静态全量 + 可行性结论）
+
+**方法**：① 先跑既有质量门（`check.sh`、`verify-upstreams.sh --quick` —— 全绿）；
+② 用**只读探索代理**按 11 类脆弱模式扫全部顶层脚本（`2>/dev/null`/`|| true` 吞错、函数外 `local`、
+`set -u` 未绑定、未加引号、缺超时、pacman 陷阱、路径假设、`read` 挂起、`mktemp` 续传、trap 覆盖、
+eval/mapfile 坑）；③ 主脚本高风险段人工精读；④ 结果固化成新工具 `doctor.sh`。
+
+**可行性结论：没问题** —— 上游地址全部可达、门禁全绿、核心机制（断点续传主循环、准原子替换、
+自愈链、开发文件补齐）经得起压力。审查的价值在"假成功/假判据"这一类，不在功能缺失。
+
+### 13.1 已修（按严重度）
+
+| 级别 | 问题 | 修法 |
+|---|---|---|
+| **P0** | 主脚本装 GE-Proton：`rm -rf 旧版` → `tar -xzf … 2>/dev/null`（错误被吞）→ **无条件打印"安装完成"** → 还删掉 500MB 下载缓存。包损坏/空间不足时就变成"旧没了、新是空壳、还说成功" | 改「暂存 → 校验 `proton` 存在 → `mv` 原子换上去」；**只有成功才清缓存**（失败留着续传） |
+| **P0** | `verify_step(setup_games)` 只看"有没有目录" → 解包半失败留下空目录也算达标（**假绿灯**，与上一条叠加） | 改判"真存在 `proton` 文件" |
+| **P1** | `systemctl enable … >/dev/null 2>&1` 后不回查 `is-enabled`（背键守护、Decky 两处）→ 又是"文件在 ≠ 已启用" | 回查 `is-enabled`/`is-active` 并分别告警（`§11.3` 的教训复用） |
+| **P1** | `pacman -Sy` 失败只 `warn` 就继续 → 后面的装包步骤按**过期包列表**解析依赖（部分升级风险） | 默认**中止**并说清原因；`PKG_ALLOW_STALE=1` 才放行。自愈链不受影响（有 20 分钟重试定时器） |
+| **P1** | 没有 `/var/lib/pacman/db.lck` 守卫 → 与后台更新抢锁时每条装包命令都失败，表象像"这个包装不上" | 刷新前查锁：有 `pacman` 进程 → 中止；只有残留锁 → 提示怎么删 |
+| **P1** | `install-ge-proton.sh`(509MB) / `install-dwproton.sh`(268MB) 下载缺 `--max-time` → 网络卡死会无限挂 | 补 `--max-time`（+ 保留 `-C -` 续传）；解包同样改"暂存→校验→原子换" |
+| **P2** | `check.sh` 里一条断言锚点字面不存在 → **恒真**（又是假绿灯）；执行位检查在没有 `.git` 时被整段跳过；横幅正则遇 tab 缩进会静默不判 | 断言改成"匹配不到就报错"、加非 git 的 `-x` 兜底 |
+| **P2** | `可选组件安装.sh` 自提权缺 TTY 守卫 → 非交互（管道/定时/批量）会**永久卡在 sudo 密码**（实测 2.5 分钟无反应） | 加 `[ -t 0 ]` 守卫（给出可复制的运行方式后退出）+ 自提权用**绝对路径** |
+| **P2** | `fix_home_owner()` 漏了 `~/.cache/ge-proton`、`Downloads/dwproton-dl`、`~/.local/share/icons` → 这些被 root 写过之后用户清不掉 | 补齐路径清单 |
+| **P2** | 零散：`install-app-home.sh` 的 `${prev:?}` 两分支写法不一致、`fix-dsh-node-pty.sh` 缺 `read` 守卫与硬编码 `/home/deck`、`install-decky-tdp.sh` 同类、`upgrade-workbuddy-aur.sh` 的 askpass 可能残留 | 逐个加固（见各文件注释） |
+
+### 13.2 新增的两个"优雅入口"
+
+- **`doctor.sh`** —— 一屏体检：系统与空间 / 必装组件（复用 `--status`）/ 自愈链（复用 `--dry-run`）/
+  开发文件 / 免密链路 / 上游（`--net`）。**只读、秒级、无临时文件**，最后给一行结论 + 该跑什么。
+  退出码 0=全绿、1=有待处理，可被脚本复用。
+- **`self-heal-after-upgrade.sh --dry-run`** —— 只读预演：打印"会修什么"，不调 sudo、不写版本戳/标记。
+  `doctor.sh` 的第 3 节就靠它。
+
+### 13.3 判据类的坑（本项目通病，能锁的都锁进 check.sh 了）
+
+- **假绿灯**（已经踩过 5 次）：`tools/shellcheck.exe` 是 Windows PE，Linux 上执行不了却恒判"0 warning"；
+  `find` 扫到 `.git/objects/**/*.sh` 这种名字像脚本的 git 对象；断言锚点字面不存在（恒真）；
+  "只查单元文件在不在"不查 `is-enabled`；"只看有没有目录"不看里面有没有真东西。
+  **统一对策**：判据要"能失败才算判据"——跑一次真命令、核一次落地物、找不到匹配就报错。
+- **假红灯**（这次自己踩到，记下来）：`sudo -l` 的输出会**按终端宽度折行**——输出到管道/文件时按 80 列，
+  命令与参数被拆到下一行。于是"整条命令行 grep"必然匹配不到，**有免密规则也会被判成"缺失"**。
+  对策：先把空白拉平（`tr -s '[:space:]' ' '`），再按路径匹配（`case`，别用正则拼路径）。
+
+### 13.4 已知取舍（明确记录，别当成 bug 反复"修"）
+
+1. **免密规则指向的是"用户可写路径上的脚本"** —— `/etc/sudoers.d/zz-steamos-self-heal` 里写的是
+   `deck ALL=(ALL) NOPASSWD: /usr/bin/bash <备份包>/steamos-setup.sh *`。备份包在 /home 或 /run/media，
+   **deck 自己能改**；再加上这条 NOPASSWD，就等价于"任何能以 deck 身份执行代码的东西(Game/AUR 脚本、
+   被投毒的配置)都能不输密码提权"。不设这条规则则至少要输一次密码。
+   - 本项目是**单人掌机**、用户本人就是管理员，故当前接受这个取舍（且它换来"升级后无人值守恢复"）。
+   - **更好的做法（2026-09-25 已实施，见 §13.5）**：把需要免密的文件**以 root 身份同步一份到
+     `/opt/steamos-backup/`**，sudoers 规则指向那份 root 属主的副本 ——
+     `/opt` 实测是 offload（bind 到 home 分区）**扛原子升级**，且 root 属主 → **用户改不动**，
+     还能顺带解决"备份包挪位置 → 规则失配"（§11.9 那个坑）。
+     （最初想放 `/usr/local`，被实测否掉：它属于 `/usr`，升级会被冲 —— 见 §13 的文档纠正。）
+2. **`free-rootfs.sh --aggressive` 是"删系统文件"的操作**（locale/man/doc/壁纸）。它是**显式开关**、
+   默认不跑、说明书标了"收益不持久"，本次只把它的失败从"悄悄吞掉"改成"报出来"。
+   别"顺手"把它变成默认，也别扩大删除范围。
+3. **`pacman -Sy` 失败默认中止**（§13.1 P1）是有意为之：继续跑会让装包步骤按过期列表解析依赖。
+   代价是"网络抖一下整轮就停"—— 用 `--allow-stale-db` 放行只做本地文件类步骤。
+   自动恢复链不受影响（自愈有 20 分钟重试定时器 + 动 pacman 前先等网络）。
+4. **本项目只在 GPD Win5 + SteamOS 实测过**（README「诚实边界」）；其它机型走 `device_profile()` 路由，
+   未逐台验证。审查也没有覆盖 `steamos-nix/`（已冻结的探路分支）与 `disabled/`。
+5. **开发文件只补"kde/qt6 集合"**（默认）；全系统还有约 507 个包缺开发文件，要用时 `--set all`。
+   这是刻意的：默认集合覆盖 CMake 常探的库，全量要多下几百 MB 而多数包一辈子用不到。
+
+---
+
+## 13.5 免密链路改用 `/opt` 下的 root 属主快照（2026-09-25 实施）
+
+**改了什么**：步骤[12] 除了写 sudoers 规则，还会把**备份包的整套顶层文件**以 root 身份同步到
+`/opt/steamos-backup/`；规则只放行快照里的 `steamos-setup.sh` 与 `fix-missing-dev-files.sh`，
+`self-heal` 的 `main.conf` 也指向快照。
+
+**为什么（三个理由，前两个是这次审查挖出来的）**
+1. **提权口子**：旧规则指向"用户可写的脚本"（备份包在 `/home` 或 `/run/media`，deck 自己能改）。
+   配上 NOPASSWD，等价于"任何能以 deck 身份执行代码的东西（被投毒的游戏/AUR 脚本/配置）
+   都能不输密码拿到 root"。快照是 `root:root`，用户改不动 → 门只剩一个：跑步骤[12] 的 root 自己。
+2. **抗挪位**：规则里是绝对路径。备份包一挪位置（`~/Downloads` → `/run/media/...`），
+   `sudo -n` 就静默失配 —— 这正是 §11.9"免密到底生不生效"那个悬案的一部分。
+   快照路径固定，且 **`/opt` 实测是 offload**（bind 到 home 分区）→ **升级后连快照都不用重建**。
+3. **顺带去掉一条没用的规则**：旧规则还放行了自愈脚本本身，但它是**用户身份**跑的、
+   根本不需要 sudo（全仓 grep 确认无人用 `sudo` 调它）—— 而它落在用户可写目录，纯属多余的口子。
+
+**代价与对策（必须知道）**
+- 快照是"上次跑步骤[12] 时的那套代码"。仓库改了不刷新 → 自动恢复仍然跑旧版本。
+  **`doctor.sh` 会比对 `sha256` 并在不一致时提示**"快照与仓库不一致 → 刷新: sudo bash steamos-setup.sh 12"。
+  这其实也是个优点：**无人值守的恢复不会执行"半改状态"的仓库代码**。
+- 快照同步失败（`/opt` 不可写等）→ 自动退回旧行为（规则指向备份包）并**打印告警**，不会变哑巴。
+- 步骤[12] 的落地复核（`verify_step(setup_selfheal)`）现在会查：快照两个关键文件在不在、
+  规则是否真的指向 `/opt/steamos-backup`。`check.sh` 也加了 6 条断言锁住这套不变量。
+
+**验证过的（本机实测）**
+```
+/opt/steamos-backup        44 个文件, root:root, 位于 offload (/dev/nvme0n1p8[/.steamos/offload/opt])
+sudo -n -l                 只有 4 条我们的规则, 全部指向 /opt/steamos-backup; 指向备份包/自愈脚本的条目 = 0
+sudo -n bash /opt/steamos-backup/steamos-setup.sh --status            ✓ 免密可用
+sudo -n bash /opt/steamos-backup/fix-missing-dev-files.sh --help      ✓ 免密可用
+self-heal --dry-run        显示会执行 `sudo -n bash /opt/steamos-backup/steamos-setup.sh …`
+doctor.sh                  ✓ 免密只放行 root 属主快照 / ✓ 快照属主正确 / ✓ 快照与仓库一致
+```
+
+### 同批纠正：背键守护的落点
+`setup-win5-backkeys.sh`（备用脚本）原先把守护进程装 `/usr/local/bin`，而 `/usr/local` **不扛升级**。
+现改为 `~/.local/opt/gpd-win5-backkeys/`，与主脚本步骤[4] 一致；安装/卸载时顺手清理旧的 `/usr/local` 落点，
+并按 `SUDO_USER` 解析真实家目录（`sudo` 下 `$HOME` 是 `/root`，直接用它会把东西装错地方）。
+
+### 13.6 Decky 插件崩在 `Minified React error #130`（2026-09-26 现场）
+
+**现场**：游戏模式里 Decky 面板变成整屏报错，报错屏自己写"likely occurred in SteamGridDB"。
+
+**根因（三条证据）**
+1. `~/homebrew/settings/loader.json` → `{"branch": 1, "store": 1}`：
+   `branch:1` = Decky 本体走 Pre-Release；`store:1` = 插件商店走 **Testing**。
+2. 装出来的插件版本带哈希：`decky-steamgriddb 1.7.1-b6bcdd0`、`protondb-decky 1.3.4-809751c`
+   —— 这是商店 **Testing 通道的 nightly 制品**（正式版在清单里是纯 semver：`1.7.1`、`1.2.0`）。
+3. `~/homebrew/logs/decky-steamgriddb/*.log` 同一天 **22 次 `Unloaded`** = 前端崩→Decky 卸载→重试的死循环。
+
+**关键分辨**：我们仓库的 `install_decky_plugin` 取的是**不带 `testing` 参数**的商店清单 → 装的是正式版；
+崩掉的这两个是 Decky 自己的测试通道装上去的。**所以别急着改我们这边的下载逻辑**（`check.sh` 已加断言锁住这一点）。
+
+**工具**：`bash diag-decky.sh`（只读）→ 一次看清通道 / 测试构建 / 崩溃循环；
+`--repair [插件名]` 走步骤[5] 用稳定版重装；`--channels-stable` 把 `loader.json` 改回 `branch:0,store:0`（先备份）。
+配套给主脚本加了 `--decky-plugins='A|B'` 开关（`=` 形式 + 开关而非环境变量，理由见 §13.5 同款：`shift` 取不准、
+`env_reset` 会剥环境变量）。
+
+**经验**：插件崩绝大多数是"**测试通道 nightly + Steam 客户端更新**"的组合，不是插件坏了。
+另外报错屏本身有 `Disable <插件>` / `Restart Decky` 按钮 —— **当场止血先点它**，再谈修根因。
+
+---
+
+### 13.7 「文件系统中已存在」= 孤儿文件，**不是**装不上（2026-09-26 定案）
+
+**现场**：一次 `steamos-setup.sh` 跑下来，两处 AUR 安装失败，报错长这样：
+```
+workbuddy: 文件系统中已存在 /opt/WorkBuddy/app.asar.unpacked/resources/trayTemplate.png
+发生错误，没有软件包被更新。
+[✗] workbuddy 安装失败
+
+wechat-universal-bwrap: 文件系统中已存在 /opt/wechat-universal/wechat
+发生错误，没有软件包被更新。
+[✗] AUR 安装未成功(网络/AUR 不可达?)
+```
+
+**根因**：`/opt/WorkBuddy/app.asar.unpacked/**` 与 `/opt/wechat-universal/*` 是**孤儿文件** ——
+`pacman -Qo <路径>` 明确回"没有软件包拥有"，pacman 本地 DB（`/usr/lib/holo/pacmandb/local/`）
+里也没有 `workbuddy` / `wechat-universal-bwrap` 记录。也就是**只有文件、没有台账**。
+
+**为什么偏偏是 `/opt` 出这事**：`/opt` 是 offload（bind 到 /home 分区）。AUR 包把主体装进 `/opt`
+（`workbuddy` 的 PKGBUILD 硬编码 `/opt/WorkBuddy`；`wechat` 的装 `/opt/${_pkgname}`），
+于是**原子升级整块换 rootfs 时，`/opt` 里的文件幸存、`/usr` 里的入口+运行时+DB 记录被冲掉**
+—— 结果就是"文件在、台账没了"。之后再装同一个包，pacman 看到文件已存在就拒绝覆盖。
+
+**诊断（三条命令，别猜）**
+```bash
+pacman -Qo /opt/WorkBuddy/app.asar.unpacked/resources/trayTemplate.png   # 没有软件包拥有 → 孤儿
+ls /usr/lib/holo/pacmandb/local/ | grep -i workbuddy                     # 空 → DB 里没记录
+ls -la /opt/WorkBuddy /opt/wechat-universal                              # 文件确实在
+```
+
+**修法（三选一，按推荐度）**
+1. **让 AUR 助手自己覆盖（推荐）**：`yay`/`paru` 交互时会问
+   `Package … already exists in filesystem. Overwrite?` → 答 `y`。
+   本仓库脚本用 `--noconfirm`，所以**必须显式告诉助手**：`--overwrite='*'`
+   （yay/paru 都支持透传给 pacman）。本项目已在主脚本 workbuddy 段与微信段接上：
+   先普通装一次，检测到 `文件系统中已存在`/`exists in filesystem` 就**带 `--overwrite` 重试一次**，
+   并在日志里说清"这是覆盖孤儿文件，不是重装"。
+2. **先清孤儿再装**：`rm -rf` 掉那几个目录（**前提：确认没有别的包/用户数据在里面**）。
+   对 `/opt/WorkBuddy` 要当心 —— 里面可能还有 `~/.workbuddy` 之外的本地数据（设置、缓存）。
+3. **手工等价**：`sudo pacman -U --overwrite='*' <缓存的 .pkg.tar.zst>`（见 §12 的同类做法）。
+
+> ⚠️ **不要**把 `--overwrite='*'` 当成万能开关塞进所有 pacman 调用 —— 它会掩盖真实的包间冲突
+> （两个包争同一个文件那种）。只在**明确判定为孤儿**（`pacman -Qo` 无主）时才用。
+
+**同一个坑的判定捷径**：只要是"**装在 `/opt` + 靠 AUR 装 + 刚做完整块升级**"，
+出现 `文件系统中已存在` 基本就是这条，不用往"包损坏"上想。
+
+#### 附：`AUR RPC unexpected EOF`（同一次现场的另一件事）
+```
+错误： error sending request for url (https://aur.archlinux.org/rpc): error trying to connect: unexpected EOF
+```
+这是 **AUR 的 RPC 接口（`aur.archlinux.org`，HTTPS）连不通**，与本项目脚本无关。
+实测 `curl --max-time 10 https://aur.archlinux.org/rpc?...` → `000`（连 TCP/TLS 都没成）。
+`aur.archlinux.org` 与 `github.com` **不是同一件事**：git 协议可能通、网页可能通，
+但 `aur.archlinux.org` 被 DNS 污染/被墙/代理规则漏掉都会长这样。
+**排查顺序**：`curl -v https://aur.archlinux.org/rpc` 看卡在哪一步（DNS？TLS？）→ 换 DNS 或补代理规则。
+脚本侧只能"把话说准"（现在报的是"AUR 不可达"而不是泛泛的"安装失败"），网络本身得用户侧解决。
+
+---
+
+### 13.8 「无法锁定数据库」被误报成「源的问题」（2026-09-26 现场，两个真 bug）
+
+**现场**：用户手动跑 `sudo bash steamos-setup.sh 3`，输出：
+```
+• 刷新仓库(pacman -Sy)...
+[!] pacman -Sy 刷新失败 —— 多半还是源的问题, 关键错误如下:
+错误：未能同步所有数据库（无法锁定数据库）
+```
+**用户的第一反应必然是"源坏了"** —— 但真正的原因跟源毫无关系。
+
+**真凶（追父进程链才看清）**
+```
+37784 pacman -Sw --noconfirm breeze
+ └─ 36284 bash /opt/steamos-backup/fix-missing-dev-files.sh --apply   ← 另一个实例正在补 KDE 开发文件
+    └─ 36283 sudo bash …
+       └─ 用户自己的 Konsole 会话（10:28 手动跑的）
+```
+即：**用户手动跑步骤[3] 的同时，另一个补开发文件的进程正在下载 `breeze` 等包（一个就几十 MB），
+一直握着 pacman 锁** → 撞锁 → 报"无法锁定数据库"。用户亲眼看到 `.part` 文件在涨才知道是在正常下载。
+
+**我们的脚本里有两个真 bug（都不是"源"的问题）**
+
+| # | bug | 后果 | 修法 |
+|---|---|---|---|
+| ① | 锁路径**写死** `/var/lib/pacman/db.lck` | 本机 DB 真身在 `/usr/lib/holo/pacmandb/`（`/var/lib/pacman` 根本不存在）→ **这个守卫从没生效过**，每次都直接落到 `pacman -Sy` 失败 | 改为运行时探测：优先 `/usr/lib/holo/pacmandb`，退回 `/var/lib/pacman` |
+| ② | 持有者匹配用 `pgrep -a -f '(^|/)(pacman\|yay\|paru)\b'` | `-f` 匹配整条命令行 → 把 `gpg-agent --homedir /etc/pacman.d/gnupg` 这种"路径里含 pacman"的进程也列成"持有者"（实测踩过），越列越糊涂 | 改用 `pgrep -x pacman -a`（只认可执行名）+ 另用 `pgrep -f 'fix-missing-dev-files\.sh'` 单独识别自愈链 |
+
+**顺带加的能力：等锁，别一撞就退**
+最可能的持锁者恰恰是**我们自己的自愈链/补齐器**，它下完包会自己放手。所以不再"一撞就退出"，而是：
+- 先打印**持有者是谁**（`pgrep -x pacman -a`），若判定是自愈链就明说"它下完包会自己放手，干等一会儿通常就过了"；
+- 最多等 **180 秒**（`PACMAN_LOCK_WAIT=秒数` 可调），每 30 秒报一次进度；
+- 等到了继续跑；等不到才退出，并给出"想多等"的命令。
+- `pacman -Sy` 失败后**再复核一次**错误文本：若含 `无法锁定数据库|unable to lock`，明确报"这是**锁**、不是源"，
+  避免再次把用户带偏。
+
+**教训（这条通用）**：报错文案本身就是产品的一部分。当守卫**失效**时，用户看到的是下一层的
+误报信息，而误报信息会把人引向**完全错误的排查方向**（这次是"源"）。所以：
+> 凡是"拦截失败后落到下层错误"的地方，下层那段的文案必须能区分上层那几类原因。
+
+### 13.8b ⚠️ 免密规则随 `/etc` 被冲 → 自愈链在"恢复免密之前"永远起不来（死循环）
+同一个现场的另一条，**比上面更硬**：
+```
+sudo[29383]: deck : a password is required ; COMMAND=/usr/bin/bash /opt/steamos-backup/steamos-setup.sh 3
+[自愈] 步骤 3 未执行(需免密 sudo, 见 steamos-setup.sh 12)
+```
+`/etc/sudoers.d/zz-steamos-self-heal` **不存在**了（`cat` 报"没有那个文件或目录"），
+`sudo -n -l` 里只剩 Valve 出厂的两条 NOPASSWD（`steamos-prepare-oobe-test`、`steamos-chroot`），
+**我们的一条都没有**。
+
+**这是预期内的**：`/etc/sudoers.d/` 在 rootfs 里，原子升级连 `/etc` 一起冲掉（见 §3）。
+但它造成一个**自指的死循环**：
+> 自愈链要恢复系统，**依赖免密**；而恢复免密这件事本身**要跑步骤[12]**，步骤[12] 要 root
+> → 免密没了 → 自愈链每 20 分钟重试一次，**每次都失败**，且永远无法自举。
+
+**所以升级后的正确顺序只能是（这点必须让用户知道）**
+```bash
+sudo bash /opt/steamos-backup/steamos-setup.sh 12   # ← 唯一必须人工输密码的一步(自举)
+sudo bash /opt/steamos-backup/steamos-setup.sh --after-upgrade
+```
+**任何"全自动恢复"的承诺都越不过这一步** —— 自愈链能处理的是"免密还在"的局部损坏。
+排查工具 `sudo bash /opt/steamos-backup/diag-sudo-selfheal.sh` 就是为了让人一眼看出
+"是规则丢了、还是快照丢了、还是路径对不上"。
+
+#### 13.8b+ 同现场的第三层悖论：修锁的钥匙被锁挡在门外（已修）
+用户真按上面跑了 `…/steamos-setup.sh 12`，**还是失败** —— 死在环境准备的 `pacman -Sy`
+（还是那个锁）。这暴露出更荒诞的一层：
+> 步骤[12] 的工作是**重建免密规则/快照/服务软链，全是文件操作、不装包、与 pacman 无关**；
+> 它却陪跑 `pacman -Sy`，于是"**修锁的人被锁挡在门外**"。补齐器持锁多久，免密就多久建不起来。
+
+**修法（3.9.6）**：`prepare()` 认 `PREPARE_NO_REFRESH=1` —— 跳过锁守卫与 `-Sy`，直达正题；
+`setup_selfheal()` 设它。只读解除/密钥环/镜像表这些快速且无锁的准备工作照跑。
+`check.sh` 钉了两条断言（开关必须存在 + setup_selfheal 必须设置）。
+
+**顺带两个口径修正**
+1. **免密已失效时，第一步该跑【仓库那份】的步骤[12]**，不是快照那份：
+   反正要人工输密码、无提权口子；而仓库那份的步骤[12] 会**顺手把过期快照同步成最新**
+   （新锁守卫/免刷新逻辑一并进快照）。"只能用快照那份"的告诫只适用于**免密还活着**的场景
+   （用快照刷快照 = 把提权口子开回来，守卫会拒绝）。doctor.sh 的建议已改为优先仓库路径。
+2. 撞锁等待超时的提示里要点明："只想恢复免密 → 步骤[12] 不受锁影响，现在就能跑"。
+
+**当前未决**：2026-09-26 现场这次，用户尚未成功跑步骤[12]（旧快照版死在锁上），
+快照/免密仍是旧状态，自愈服务持续失败并在 `~/.local/opt/steamos-self-heal/NEEDS-ATTENTION.txt` 留了标记。
+**下次重装/升级后，仓库版的步骤[12] 是第一个要跑的东西。**
+（2026-09-26 12:32 已用 `12 --force` 成功收尾；当天的完整结局见每日记忆。）
+
+---
+
+## 13.9 2026-09-27 全项目复审（方法 + 扫描结论 + 三项优化）
+
+**方法**：① 跑既有门禁；② 按 §13 的 11 类脆弱模式做**静态全量扫描**；
+③ 针对 2026-09-26 两次最贵的现场教训做定向优化（优化的方向是**消除不一致/补盲区**，不是加新机制）。
+
+**扫描结论（先看没问题的，避免重复劳动）**
+| 项 | 结果 |
+|---|---|
+| 能删根的 `rm -rf "$VAR/..."` 形态 | **0 处**（24 处 `rm -rf` 全是整变量或 `-exec {} +`） |
+| 下载 `--max-time` | 全覆盖（含 3600s 大包） |
+| 交互 `read` 挂起 | 全部带 `-t` 超时 |
+| 下载缓存用 mktemp | 无（都固定路径，保 `-C -` 续传） |
+| `verify-upstreams.sh` | 关键项全通 |
+
+**三项优化**
+1. **严格模式统一**：3 个脚本此前没开 `set -u`（`可选组件安装.sh` / `诊断-开机慢.sh` /
+   **`self-heal-after-upgrade.sh`** —— 后者是无人值守跑的，变量打错名字没人看得见）。
+   已对齐项目标准 `set -uo pipefail`，并**逐一实跑验证**（自愈 `--dry-run`、可选组件非交互、开机慢诊断）。
+2. **过期快照自检**（对应 §13.8b 的"快照永远落后于仓库"）：步骤[12] 同步时盖 `.snapmeta`
+   （源路径 + 主脚本 sha256 + 时间）；之后凡**从快照目录启动**，自动比对并警告 + 指路仓库那份。
+   > 设计取舍：只在"跑的是快照"时发声，从仓库跑时静默 —— 免密无人值守场景不受影响。
+3. **自愈清点覆盖"装在 /opt 的 AUR 包"**（微信 2026-09-26 凭空消失且无人告知）：
+   新增 `orphanpkg` 判据（目录在 + 台账没了 = 孤儿），**只报告不自动装** ——
+   可选组件不该由自愈替用户决定装不装；步骤字段写 `-` 表示不进自动修复表（否则会拿 `-` 去跑主脚本）。
+   包名走 CHECKS 的**第 5 字段**，判据保持通用。
+
+`check.sh` 新增 6 条断言（共 **195 条**全绿）。
+
+**两条通用经验**
+- **"跑错副本"是一类独立的故障源**：症状是"刚修好的 bug 原样复现"，极难往这个方向想。
+  凡是"同一份代码有多个副本"的设计（快照/缓存/已安装副本），都要有**版本可见性**（盖章 + 启动自检）。
+- **"消失"比"报错"更需要主动告知**：升级冲掉台账时，程序不会报错、只会从菜单里不见。
+  所以清点清单该覆盖"幸存文件 + 缺失台账"这种不一致态，而不只是检查"文件在不在"。
+
+---
+
+## 13.10 2026-09-27 第二次复审：把散脚本封装成一个应用（可行性 + 健壮性验证）
+
+**诉求**：回顾整个项目 → 优雅地优化 → 详细的可行性分析与健壮性验证 → 封装成一个完整的可执行项目应用。
+
+### 13.10.1 方法（沿用 §13 的路子，但换了个问法）
+
+§13 那次问的是"哪里会坏"；这次问的是**"人会怎么用错 / 用什么会腐化"**。所以做了三步：
+① 跑既有门禁建立基线（`check.sh` 217 条全绿 + `doctor.sh`）；
+② **一致性扫描**：把文档/注释/元数据里"会过期的事实"逐类扫一遍（步骤数、行数、版本号、
+脚本清单、悬空引用）；
+③ 交付一个统一入口，并给它**装上自动化护栏**（人记不住的东西交给断言）。
+
+### 13.10.2 扫描结论（修了 6 处"不报错、只是慢慢错"的漂移）
+
+| 位置 | 原来 | 实际 | 危害 |
+|---|---|---|---|
+| `VERSION` | `3.7.0` | `3.9.10` | 半年前就停了；现在它是入口横幅与**发布包名**的来源 |
+| `重装后先运行我.sh` 头注释 | "15 步" | 16 步 | 用户按错的步数预期判断"是不是跑完了" |
+| `可选组件安装.sh` 头注释 | "十二步主线" | 16 步 | 同上 |
+| `SCRIPT-MAINTENANCE` §1.1 | "约 1976 行" | 3734 行 | 维护者据此估复杂度会错 |
+| `SCRIPT-MAINTENANCE` §1.1 步骤 2 | "IBus 原生输入法" | **已禁用（空函数）** | 与 `README` 直接矛盾，改错的地方就在这 |
+| `fix-workbuddy-wayland-ime.sh` | 指向 `check-wayland-ime.sh` | **该脚本从未存在** | 读者去找一个不存在的东西 |
+
+后三类是同一类病：**同一事实写了两份**。能自动比对的（版本号）已加断言；其余靠"指向唯一来源"解决。
+
+### 13.10.3 可行性分析（结论：低风险 —— 因为零侵入）
+
+| 关注点 | 结论 | 依据 |
+|---|---|---|
+| 会不会破坏免密自举链 | **不会** | 入口**不提权、不进 sudoers**；需要 root 的转发给原脚本原有的路径。另加两条断言钉死 |
+| 会不会影响步骤[12] 的快照同步 | **不用改一行** | `sync_snapshot()` 本来就是"顶层所有文件一起搬"，新文件自动被带上（`chmod 0755` 也自动适用于 `*.sh`） |
+| 会不会影响断点续传状态机 | **不会** | 入口不碰 `~/.cache/steamos-setup/state`，只转发 |
+| 会不会与"单脚本可独立拷贝"（铁律 1）冲突 | **不冲突** | 入口本身自包含、可单独拷走；没有引入 `lib/` |
+| 新增维护负担 | **一处**：加脚本要在注册表加一行 | 而这一条有断言兜底 —— 忘了会报红 |
+| 会不会让"跑错副本"变严重 | **不会，反而更可见** | `selfcheck` 会说明"你跑的是仓库那份还是快照那份"，并比对 sha256 |
+
+### 13.10.4 健壮性验证（全部实跑，含反例）
+
+| 验证项 | 手段 | 结果 |
+|---|---|---|
+| 语法 | `bash -n` 全部脚本 | 通过 |
+| 静态 | `shellcheck -S warning`（含新入口） | 0 warning |
+| 门禁 | `check.sh` | **233 条全绿**（218 → +15） |
+| **免密规则"生成↔判定"同步** | 真机跑步骤[12] 得到"[跳过] 已完成" | 已修判据 + 加交叉断言（见下），反例验证会报警 ✔ |
+| **免密规则的参数形态** | 用当前规则集直接探 `sudo -n bash <脚本> --参数` | 确证"不带 `*` 只放行原样调用" → 加双向断言（见下） |
+| 未知命令 | `bash steamos.sh nosuchcmd` | 退 2，并指路 `list` / `doctor` |
+| 缺文件 | 临时移走 `fix-opt-deps.sh` | 退 3；`selfcheck` 同时报"注册了但文件不在" |
+| 退出码透传 | `steamos.sh status` | 退 0（子脚本的码原样带出） |
+| 非交互不挂起 | `steamos.sh setup </dev/null`、`apps </dev/null` | 打印该跑的命令，退 4，**不挂起** |
+| 非交互只读项 | `steamos.sh status </dev/null` | 照跑（无人值守体检可用） |
+| 交互菜单 | **伪终端**(pty) 真发按键：`42`→执行→回车→`q` | 渲染、执行、回菜单、退出码 0 全部正常 |
+| 符号链接调用 | 软链到 `/tmp/linktest/toolbox` 再调用 | `HERE` 正确解析到**真实包目录**（解链后 cd），功能正常 |
+| 发布包自包含 | `pack` → 解到 `/tmp` → 包内 `selfcheck` | 全绿（628K，无 git 依赖） |
+| **反例①** 新脚本未登记 | 造一个 `zz-probe.sh` | 断言报警"这些脚本没登记进 steamos.sh" ✔ |
+| **反例②** 注册表行引号没闭合 | 伪造一行 | 报警"行数对不上(45/44)"+ "内建命令没有实现函数: zzbogus" ✔ |
+
+> 反例②是**顺手补掉一个自己的盲区**：第一版用带引号的正则去抽注册表行，
+> 于是一行"引号没闭合"的坏行**匹配不上、被后面所有检查静默忽略**。
+> 现在改成"原始行数 vs 可解析行数"对账（带下限，防整表删空时 0=0 通过）。
+> 又一次印证 §13 那条规矩：**判据失效本身必须报错，否则它比没有还危险。**
+
+### 13.10.5 三个自己踩的坑
+
+1. **`GROUPS` 是 bash 特殊变量**（当前用户的组 ID 列表），`GROUPS=(health setup …)`
+   的赋值被**无声吞掉** → 菜单分组直接变成 `1000/998/973` 这种组号。改名 `CMD_GROUPS`。
+   *教训：给 shell 脚本起变量名前，先想一下它是不是 shell 自留的名字。*
+2. **`tar --exclude` 的作用域**：不含 `/` 的模式按"基名"在**任意层级**匹配；写成 `./.workbuddy`
+   只挡得住顶层，`steamos-nix/` 子目录里的会话产物照样进包 —— 被 `dist-verify` 当场抓到。
+3. **断言选择器要能看见坏数据**：见 §13.10.4 的反例②。凡是"先按格式抽出数据、再校验数据"的
+   断言，都要额外对一次**总量**，否则格式坏掉的那条会从眼皮底下溜走。
+
+### 13.10.6 复查时**用户真跑一次**抓到的第 4 个坑（最有价值的一个）
+
+我按上面的清单验证完、宣布"全绿"之后，用户照我给的命令跑了一次步骤[12]，结果是：
+
+```
+$ sudo bash steamos-setup.sh 12
+[✓] [跳过] 12 升级后自愈服务 —— 已完成于 2026-09-26 12:32:23  (--force 可强制重跑)
+```
+
+**看起来一切正常，其实什么都没做。** 免密快照停在上一天的版本，新加的第三条免密规则
+（`fix-opt-deps.sh`）也没补上 —— 自愈链就此瘸腿，而且**全程不报错**。
+
+**根因**：`setup_selfheal` 里"**生成**免密规则"与 `verify_step` 里"**判定**规则在不在"
+是**两处**。v3.9.10 加第三条规则时只改了生成那处。
+> 同一类坑 2026-09-25 已经踩过一次（受害者是"开发文件补齐器"那条规则），
+> 当时还在 `verify_step` 旁边写了注释提醒自己 —— **第二次照样复发**。
+
+**修**：
+1. `verify_step setup_selfheal` 补上第三条的判据（快照里文件在不在 + sudoers 里有没有）。
+2. `check.sh` 加**交叉核对断言**：从 `SNAP_*="$SNAP_DIR/xxx"` 抽出全部规则脚本名，逐个
+   要求在 `verify_step` 里出现**在一行 `grep` 判据上** —— 以后再加第四条规则，会被断言逼着改两处。
+
+**这条断言自己也踩了一次假绿灯**：第一版写的是"分支里提到这个名字就算过"，
+结果被同一分支里 `[ -f /opt/steamos-backup/fix-opt-deps.sh ]` 这种
+**文件存在性**检查骗了过去（反例验证时才暴露）。改成"必须出现在 `grep` 行上"才作数。
+> 又一次印证：**判据要盯住"真正的那个动作"，而不是"提到过没有"。**
+
+**方法上的教训（比这个 bug 本身更值钱）**：
+静态扫描 + 自造反例，**抓不到"两处知识不同步"这类 bug** —— 因为它两侧各自都"自洽"，
+只有**真跑一遍、看它到底做了什么**才会现形。我给的"修好了"结论之所以快了半步，
+就是因为验证停在"读代码 + 造反例"，而用户那一步是"执行真实路径"。
+**能真跑的，别只读代码。**
+
+### 13.10.7 确证 sudoers 的参数语义（不查文档，直接探）
+
+修上面那个 bug 时顺手确证了一条**一直被假设、没人验过**的规则（**用现有规则集直接试**）：
+
+```
+$ sudo -n bash /opt/steamos-backup/fix-opt-deps.sh --任意参数
+sudo: 需要密码                      ← 被拒(退 1)
+$ sudo -n bash /opt/steamos-backup/fix-opt-deps.sh
+[✓] 依赖齐全: webkit2gtk-4.1 libayatana-appindicator    ← 放行(退 0)
+```
+
+**结论**：`NOPASSWD: /usr/bin/bash <脚本>`（不带 `*`）**只放行"原样调用"**；一旦带参数就会被拒，
+必须另写一条 `... <脚本> *`。这就是为什么主脚本与开发文件补齐器各有 `*` 变体，
+而补依赖器没有 —— **因为自愈链调它时不传参，这是刻意的"最小提权面"**。
+
+**加的双向断言**（`check.sh` 2.15e）：把"调用方式"和"规则形态"绑在一起校验 ——
+- 调用改成传参、规则却还是没 `*` → 报"无人值守时会被拒(静默失败)"；
+- 规则无谓加上 `*`、调用并不传参 → 报"提权面被无谓放大"。
+两边各做了一次反例验证。
+
+> 顺带一个副产品：那次探针同时**确证了 Clash Verge 的依赖是齐的**
+> （`webkit2gtk-4.1` + `libayatana-appindicator` 都在），也就是"便携化应用 + `/usr` 依赖"
+> 这条链现在是健康的 —— 属于"顺便验了另一件该验的事"。
+
+### 13.10.8 边界（诚实记下）
+
+- 注册表里的"模式"（`ro` / `root` / `ui`）是**我按各脚本的实际行为判定的**，不是脚本自己声明的。
+  加新脚本时若判错：标 `ro` 而实际需要密码 → 无人值守时会挂住（这是**唯一**有实际后果的一档）。
+  兜底做法：不确定就标 `ui`（默认最保守）。
+- `pack` 打的是**工作区当前内容**（不是最后一次 commit）—— 发布前先跑 `check.sh`，它才是台账标准。
+- 入口的菜单没有做"命令参数输入"（比如给 `setup` 传编号）：菜单里只跑默认形态。
+  要带参数直接在命令行用：`bash steamos.sh setup 3`。
+
+### 13.10.9 同日第三次复审（Windows 副本）：执行位的跨平台真相 + 两处护栏加固
+
+上一轮复审在 SteamOS 真机上做；这一轮在 **Windows 副本**（OneDrive 同步目录，Git Bash）上做，
+结果 `check.sh` 一跑就抓到一个真机上**不可能出现**的红项：`steamos.desktop 没有执行位`。
+顺藤摸瓜，补齐了"执行位"这个判据在跨平台场景下的完整真相：
+
+**三个实测出来的平台事实（都拿探针验过，不是猜）**
+
+1. Windows/NTFS 上 Git Bash 的 `chmod +x` 是**空操作**（探针：临时文件 chmod 后 `-x` 仍为假）。
+2. Git Bash 的 `-x` 测试是**内容嗅探**：有 shebang 的 `.sh` 显示可执行，无 shebang 的
+   `.desktop` 永远不可执行 → 在 Windows 上拿磁盘位判 `.desktop` **必然假红**。
+3. Windows 上 `git add` 一律记 `100644` → 新脚本/启动器从 Windows 提交会静默丢执行位，
+   正是 8977c11「整仓没执行位 → 双击没反应」事故的**复发通道**。
+
+**加固一：check.sh 的执行位判据改为「索引优先 + 环境探针」**
+- 已入 git（含已暂存）→ 查 `git ls-files -s` 的索引模式（跨平台，Windows 上同样有效），
+  且从"点名 4 个文件"**扩到全部已跟踪 `.sh`/`.desktop`**（当前 62 个全 100755）。
+- 未入 git → 先跑 `fs_can_x` 探针：本机表示不了执行位就**明示跳过**（"提交后由索引断言兜底"），
+  不再假红；表示得了（Linux）才拿磁盘位判，行为与原来一致。
+- 反例验证：`git add steamos.desktop`（Windows 记 100644）→ check.sh 两处同时报警并给出
+  `git update-index --chmod=+x` 修法；修复后转绿 ✔
+
+**加固二：dist-verify 新增「tar 元数据执行位」判据**
+- 动机：在 Windows 上 `pack` 时，`.desktop` 会被按 644 存进包 → 到 Linux 双击没反应；
+  而解包后在 Windows 上做 `-x` 又必然假红。**唯一两边都信的判据是 tar 里存的模式**。
+- 反例验证：在 Windows 上真打了一次包 → 两个 `.desktop`（及 `disabled/` 一个存档脚本）
+  全是 644 → dist-verify 退出 1 并精确点名 ✔；换回 Linux 造的好包 → 全绿 ✔
+
+**加固三（同日稍后实施）：pack 改为平台免疫 —— 上面"只能在 Linux 造"的限制已解除。**
+与其把"别在 Windows 上打包"写成纪律，不如让打包器**不依赖文件系统位**：成员分两趟显式
+`--mode` 写包（执行位集合 = 名字规则 ∪ git 索引 100755，其余 644；`--no-recursion` 防子树
+按 FS 位二次塞入）。任何平台打出的包模式都正确，dist-verify 的元数据判据负责兜底验证。
+3.10.1 的发布包就是在 Windows 上造的，dist-verify 全绿；文件清单与 3.10.0 的 Linux 造包
+逐一比对一致（数据文件从"碰巧全 755"回归正常的 644，更干净）。
+
+**结论**：`pack` / `check.sh` / `selfcheck` / `dist-verify` 在 Windows 与 Linux 上**行为一致、
+全部可信**。跨平台时唯一要记得的手工动作是从 Windows 提交新脚本后
+`git update-index --chmod=+x`（忘了也没关系：pre-commit 的索引断言会拦下并教你怎么修）。

@@ -24,6 +24,7 @@
 #  支持的 app:
 #    firefox-nightly   Firefox Nightly(官方 tar.xz)      → ~/.local/opt/firefox-nightly
 #    dsh-desktop       DeepSeek Harness 桌面版(官方 AppImage) → ~/.local/opt/deepseek-harness-desktop
+#    clash-verge       Clash Verge Rev(官方 deb 拆包)      → ~/.local/opt/clash-verge
 #    wps-office        WPS Office 中文版(官方签名 deb)     → /opt/kingsoft + ~/.local
 #
 #  通用环境变量: MIRROR(镜像前缀) FORCE=1(等同 --force) REFETCH=1(强制重新下载)
@@ -70,7 +71,7 @@ run_root() {
     else die "需要 root 但本机没有 sudo"; fi
 }
 
-list_apps() { printf '  %s\n' firefox-nightly dsh-desktop wps-office; }
+list_apps() { printf '  %s\n' firefox-nightly dsh-desktop clash-verge wps-office; }
 
 # ===========================================================================
 #  公共框架
@@ -107,7 +108,7 @@ atomic_install() {
     [ -e "$src" ] || { err "暂存里没有 $src"; return 1; }
     if [ "$as_root" -eq 1 ]; then
         run_root mkdir -p "$(dirname "$dest")" || return 1
-        [ -e "$dest" ] && { run_root rm -rf "$prev" 2>/dev/null || true; run_root mv "$dest" "$prev" || return 1; }
+        [ -e "$dest" ] && { run_root rm -rf "${prev:?}" 2>/dev/null || true; run_root mv "$dest" "${prev:?}" || return 1; }
         if ! run_root cp -a "$src" "$dest"; then
             err "复制失败(空间不足?) —— 回滚"; run_root rm -rf "$dest" 2>/dev/null || true
             [ -e "$prev" ] && run_root mv "$prev" "$dest" 2>/dev/null
@@ -214,6 +215,14 @@ app_setup() {
             STAGE_REL="squashfs-root"; DEST_DIR="$VENDOR_DIR/app"
             DSH_IMG="$VENDOR_DIR/Deepseek.Harness.Desktop.AppImage"
             ;;
+        clash-verge)
+            TITLE="Clash Verge Rev"
+            NEEDS_ROOT=0
+            VENDOR_DIR="$LOCAL/opt/clash-verge"
+            CACHE_DIR="$REAL_HOME/.cache/clash-verge"
+            # 保留 usr/ 相对结构(见 profile 注释: Tauri 资源按可执行文件相对位置找)
+            STAGE_REL="tree/usr"; DEST_DIR="$VENDOR_DIR/usr"
+            ;;
         wps-office)
             TITLE="WPS Office 中文版"
             NEEDS_ROOT=1
@@ -230,6 +239,7 @@ app_urls() {
     case "$APP" in
         firefox-nightly) ffn_urls ;;
         dsh-desktop)     dsh_urls ;;
+        clash-verge)     cv_urls ;;
         wps-office)      wps_urls ;;
     esac
 }
@@ -239,6 +249,7 @@ app_extract() {
     case "$APP" in
         firefox-nightly) ffn_extract ;;
         dsh-desktop)     dsh_extract ;;
+        clash-verge)     cv_extract ;;
         wps-office)      wps_extract ;;
     esac
 }
@@ -249,6 +260,7 @@ app_entry() {
     case "$APP" in
         firefox-nightly) write_entry "$FFN_ENTRY" ffn_entry_body ;;
         dsh-desktop)     write_entry "$DSH_ENTRY" dsh_entry_body ;;
+        clash-verge)     write_entry "$CV_ENTRY" cv_entry_body ;;
         wps-office)      wps_entries ;;
     esac
 }
@@ -293,6 +305,7 @@ app_desktop() {
     case "$APP" in
         firefox-nightly) ffn_desktop ;;
         dsh-desktop)     dsh_desktop ;;
+        clash-verge)     cv_desktop ;;
         wps-office)      wps_desktop ;;
     esac
 }
@@ -302,6 +315,7 @@ app_extra() {
     case "$APP" in
         firefox-nightly) ffn_extra ;;
         dsh-desktop)     dsh_extra ;;
+        clash-verge)     cv_extra ;;
         wps-office)      wps_extra ;;
     esac
 }
@@ -452,6 +466,123 @@ dsh_extra() {
             sub "包内建议的 dsh CLI 版本: $need"
         fi
     fi
+}
+
+# ===========================================================================
+#  clash-verge (Clash Verge Rev)
+#  env: CV_VER(钉版本) CV_SKIP_DEPS=1(跳过依赖安装)
+# ---------------------------------------------------------------------------
+#  ⚠️ 上游**不发 AppImage**(Linux 只有 deb/rpm)。deb 直接装会进 /usr —— 原子升级必被冲,
+#     所以照 WPS 的路子: 拆 deb → 把整棵 usr/ 树搬进 ~/.local/opt/clash-verge
+#     (**保留 usr/ 的相对结构**: Tauri 的资源是按可执行文件相对位置找的, 打散会起不来)。
+#  ⚠️ 唯一的外置依赖: webkit2gtk-4.1(Tauri 的 WebView, 在 /usr) —— 升级会被冲。
+#     ① 装的时候一并 pacman 装好; ② 入口 wrapper 会先自检这个库, 缺了直接给出
+#        能复制的命令, 绝不给你"点了没反应"的哑错误; ③ 升级后重跑本项即可补回(幂等)。
+#     这是本组件唯一"会被升级冲掉"的部分, 已在 MENU_NAME 里写明, 不藏着。
+#  ⚠️ 合规: 本脚本只负责**安装软件**; 代理节点/订阅/用途由用户自行负责, 须遵守所在地
+#     法律法规与所在网络的管理规定。
+# ===========================================================================
+CV_REPO="clash-verge-rev/clash-verge-rev"
+CV_FALLBACK_VER="2.5.6"
+CV_ENTRY="$BIN_DIR/clash-verge"
+CV_DEPS=(webkit2gtk-4.1 libayatana-appindicator)
+
+cv_tag() {
+    local api t=""
+    for api in "https://api.github.com" "https://gh-proxy.com/https://api.github.com"; do
+        # ⚠ ghfast/ghproxy.net 不代理 api.github.com(403), 别加进来白等
+        t="$(curl -sL --connect-timeout 8 --max-time 25 "$api/repos/$CV_REPO/releases/latest" 2>/dev/null \
+             | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+        [ -n "$t" ] && break
+    done
+    printf '%s\n' "${t:-v$CV_FALLBACK_VER}"
+}
+
+cv_urls() {
+    local ver="${PIN_VER:-${CV_VER:-$(cv_tag)}}"; ver="${ver#v}"
+    local asset="Clash.Verge_${ver}_amd64.deb"
+    local gh="https://github.com/$CV_REPO/releases/download/v$ver/$asset"
+    local m
+    printf '%s|%s\n' "$ver" "$gh"
+    for m in "$MIRROR" "https://gh-proxy.com" "https://ghfast.top" "https://ghproxy.net"; do
+        [ -n "$m" ] || continue
+        printf '%s|%s/%s\n' "$ver" "${m%/}" "$gh"
+    done
+}
+
+cv_extract() {
+    # deb = ar 包, 里面是 control.tar.* + data.tar.*(实测 v2.5.6 是 data.tar.gz; 也备 zst/xz)
+    local member=""
+    member="$(bsdtar -tf "$ARCHIVE" 2>/dev/null | grep -E '^data\.tar\.(gz|zst|xz)$' | head -1)"
+    [ -n "$member" ] || { err "deb 里没有 data.tar.* —— 包结构异常"; return 1; }
+    mkdir -p "$STAGE/tree" || return 1
+    case "$member" in
+        *.zst) bsdtar -xOf "$ARCHIVE" "$member" 2>/dev/null \
+                   | ( command -v zstd >/dev/null 2>&1 && zstd -dcf || bsdtar -xf - ) \
+                   | tar -xf - -C "$STAGE/tree" 2>/dev/null ;;
+        *)     bsdtar -xOf "$ARCHIVE" "$member" 2>/dev/null \
+                   | tar -xzf - -C "$STAGE/tree" 2>/dev/null ;;
+    esac
+    # 判据要"真能启动的那个文件", 不是"目录在"(与 GE-Proton 那次假绿灯同源的教训)
+    [ -e "$STAGE/tree/usr/bin/clash-verge" ] \
+        || { err "解包后没有 usr/bin/clash-verge —— 上游包结构变了, 别硬装"; return 1; }
+    chmod +x "$STAGE/tree/usr/bin/"* 2>/dev/null || true
+    ok "解包校验通过(usr/bin/clash-verge 在位)"
+}
+
+cv_entry_body() {
+    printf '#!/usr/bin/env bash\n'
+    printf '# 由 install-app-home.sh(clash-verge) 生成 —— /home 自持入口\n'
+    printf '# 本体在 %s(升级幸存); 唯一外置依赖是 webkit2gtk-4.1(在 /usr, 升级会被冲)。\n' "$DEST_DIR"
+    printf 'APP="%s/bin/clash-verge"\n' "$DEST_DIR"
+    printf '[ -x "$APP" ] || { echo "Clash Verge 本体不在: $APP —— 重跑 可选组件安装.sh 的 Clash Verge 项" >&2; exit 1; }\n'
+    printf '# 依赖自检: 缺库时给可复制的命令, 不给"点了没反应"的哑错误\n'
+    printf 'if ! ldconfig -p 2>/dev/null | grep -q "libwebkit2gtk-4.1.so.0"; then\n'
+    printf '  echo "Clash Verge: 缺 libwebkit2gtk-4.1.so.0(Tauri WebView)。" >&2\n'
+    printf '  echo "原子升级会把它冲掉 —— 装回(要一次密码):" >&2\n'
+    printf '  echo "  sudo pacman -S --needed webkit2gtk-4.1 libayatana-appindicator" >&2\n'
+    printf '  exit 1\n'
+    printf 'fi\n'
+    printf 'exec "$APP" "$@"\n'
+}
+
+cv_desktop() {
+    # 字段照搬包内 .desktop(别自己编); 注意上游文件名带空格
+    local bdesk="$STAGE/tree/usr/share/applications/Clash Verge.desktop"
+    local name="Clash Verge" comment="Clash Verge Rev" wmclass="clash-verge"
+    local cats="Network" mimes="x-scheme-handler/clash" t
+    if [ -f "$bdesk" ]; then
+        t="$(sed -n 's/^Name=//p' "$bdesk" | head -n1)";           [ -n "$t" ] && name="$t"
+        t="$(sed -n 's/^Comment=//p' "$bdesk" | head -n1)";        [ -n "$t" ] && comment="$t"
+        t="$(sed -n 's/^StartupWMClass=//p' "$bdesk" | head -n1)"; [ -n "$t" ] && wmclass="$t"
+        t="$(sed -n 's/^Categories=//p' "$bdesk" | head -n1)";     [ -n "$t" ] && cats="$t"
+        t="$(sed -n 's/^MimeType=//p' "$bdesk" | head -n1)";       [ -n "$t" ] && mimes="$t"
+        info "已从包内 .desktop 继承字段(WMClass=$wmclass)"
+    else
+        warn "包内没找到 .desktop, 用内置默认字段"
+    fi
+    local ic=""
+    ic="$(find_icon "$DEST_DIR" 'share/icons/hicolor/256x256@2/apps/*.png' \
+                                'share/icons/hicolor/128x128/apps/*.png' \
+                                'share/icons/hicolor/*/apps/*.png')"
+    copy_icon "$ic" clash-verge
+    write_desktop "clash-verge.desktop" "$name" \
+        "$comment (官方 deb 解到 /home, 不占 rootfs)" \
+        "$CV_ENTRY" "$ICON_DIR/256x256/apps/clash-verge.png" \
+        "$cats" "$mimes" "$wmclass"
+}
+
+cv_extra() {
+    # 唯一会进 /usr 的部分(Tauri WebView)。装上; 升级后重跑本项补回。
+    [ "${CV_SKIP_DEPS:-0}" -eq 1 ] && { info "CV_SKIP_DEPS=1 → 跳过依赖安装"; return 0; }
+    if [ "$(id -u)" -ne 0 ]; then
+        warn "非 root: 跳过 webkit2gtk-4.1 安装 —— 它是 Tauri WebView, 缺了 GUI 起不来"
+        sub "请以 root 重跑本项, 或手动: sudo pacman -S --needed ${CV_DEPS[*]}"
+        return 0
+    fi
+    info "安装 Tauri WebView 依赖: ${CV_DEPS[*]}"
+    sub "(在 /usr → 原子升级会被冲; 升级后重跑本项即可补回, 幂等)"
+    pacman -S --noconfirm --needed "${CV_DEPS[@]}" 2>&1 | tail -3
 }
 
 # ===========================================================================

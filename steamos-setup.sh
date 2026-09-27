@@ -38,6 +38,7 @@
 #   [13] wiliwili: B站第三方客户端(flatpak 用户级安装, 原子升级不冲)
 #   [14] LocalSend: 局域网传文件(官方 AppImage 解到 /home; 附带放行防火墙 53317)
 #   [15] markdown 阅读器: glow(单个静态二进制落 ~/.local/bin; 顺带注册 .md 双击打开)
+#   [16] Firefox Nightly: 官方便携包解到 /home(可自更新、扛原子升级; 复用 install-app-home.sh)
 #        —— 为什么不用 marker/ghostwriter 那些 GUI: 它们要把 Qt/GTK 运行时装进 rootfs,
 #           原子升级会被冲; glow 只依赖 glibc, 放 /home 就永久幸存。
 #
@@ -54,7 +55,9 @@
 #    - 进度记在 ~/.cache/steamos-setup/state, **每步成功才写**。
 #      中断(Ctrl+C / 断网 / 某步报错)后重跑同一条命令, 会跳过已完成步骤, 从断点继续。
 #    - 步骤失败不写进度 → 下次自动重试该步, 不会假装完成。
-#    - 强制重跑已完成的步骤: FORCE=1 bash steamos-setup.sh 4   (或 --force)
+#    - 强制重跑已完成的步骤: sudo bash steamos-setup.sh 4 --force
+#      ⚠️ 别写 `FORCE=1 sudo ...`: 写在 sudo 前面的环境变量会被 sudo 的 env_reset
+#      剥掉(2026-09-25 实测, 步骤被"跳过"就是这个原因); --force 参数最稳。
 #    - 大文件下载(Decky / GE-Proton)用 curl -C - 续传, 断网重跑不从头下。
 #
 #  重要:
@@ -87,6 +90,9 @@
 set -uo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
+# 免密快照目录(offload 到 /home 分区 → 扛原子升级)。步骤[12] 负责同步, 启动自检会读它。
+# 2026-09-27: 提升为全局常量, 让"同步逻辑"与"过期快照自检"共用同一个路径(避免两处写死漂移)。
+SNAP_DIR="/opt/steamos-backup"
 
 # ---------- 颜色 / 工具 ----------
 C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_DIM=$'\033[2m'; C_R=$'\033[0m'
@@ -331,8 +337,10 @@ show_help() {
       echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端  14/localsend=局域网传文件  15/mdread=markdown阅读器(glow)"
     echo "设备画像: --device 只检测本机机型(免root): AMD掌机/AMD台式/Intel掌机/Intel+N卡台式"
     echo "断点续传: 直接重跑即可(已完好的步骤自动跳过, 被系统升级冲掉的会自动重建)"
-    echo "         --reset 清进度; FORCE=1 或 --force 强制重跑"
+    echo "         --reset 清进度; --force 强制重跑(用参数, 别用 FORCE=1 sudo 前缀 —— 会被 env_reset 剥掉)"
     echo "         --after-upgrade (等价 restore): 升级后一键恢复, 自动检测版本变化并重建被覆盖的配置"
+    echo "         --allow-stale-db 仓库刷新失败也继续(只做本地文件类步骤时用; 默认会中止以免部分升级)"
+    echo "         --decky-plugins='A|B' 只装/重装指定 Decky 插件(修被 nightly 搞崩的插件时用)"
     echo "         --adopt 只检测不安装: 把本机已达标的步骤登记为完成(机器已配好时用它打底)"
     echo "设备检测: 自动识别 GPD Win5 / AMD台式 / N卡机器 / Intel核显(含 Panther Lake), 各步骤据此路由"
     echo "         第[4]步背键只在 Win5 上执行(WIN5_FORCE=1 强跑); 第[9]步TDP只在 APU/核显上执行"
@@ -352,7 +360,7 @@ show_help() {
     echo "  x11 模式需 GTK_IM_MODULE=ibus: 原[2]步已禁用, 需自行补环境变量(一般用默认 wayland 即可)"
     echo "TDP 默认档位(第[9]步): TDP_AC=插电W TDP_DC=离电W  例: TDP_AC=75 TDP_DC=40 sudo bash $SCRIPT_NAME 9"
     echo "NTP 服务器(第[10]步): NTP_SERVERS='ntp.aliyun.com ntp.tencent.com'  例: sudo bash $SCRIPT_NAME 10"
-    echo "Decky 预置插件(第[5]步): DECKY_PLUGINS=\"SteamGridDB ProtonDB Badges\"(默认) | 空格分隔装多个 | DECKY_PLUGINS=\"\" 跳过"
+    echo "Decky 预置插件(第[5]步): 默认 SteamGridDB + ProtonDB Badges | 自定义用 | 分隔(名字含空格, 不能用空格分隔): DECKY_PLUGINS='Decky Localsend|ProtonDB Badges' | DECKY_PLUGINS=\"\" 跳过"
     exit 0
 }
 
@@ -398,9 +406,138 @@ step_label() {
         setup_wiliwili) echo "13 wiliwili(B站客户端)" ;;
         setup_localsend) echo "14 LocalSend(局域网传文件)" ;;
         setup_mdread)   echo "15 markdown 阅读器(glow)" ;;
+        setup_firefox)  echo "16 Firefox Nightly" ;;
         *)              echo "$1" ;;
     esac
 }
+
+# LocalSend 的 53317 是否"没被防火墙挡住"。
+# ⚠️ 判据不能用 `grep -r 53317 /etc/firewalld`: SteamOS 出厂的 public zone 就开了
+#    1024-65535/tcp+udp, 53317 落在范围里 —— 此时 `firewall-cmd --add-port` 会判
+#    ALREADY_ENABLED 而**不写盘**(退出码仍是 0), 字面量 '53317' 永远不会出现在配置里。
+#    实测后果(2026-09-25): step[14] 被误判"落地复核未通过"→ 永远不记进度、每次重跑重装;
+#    自愈清单里那条 fwport 也会每次开机都白报一次缺失。正解是问 firewalld 自己。
+fw_53317_ok() {
+    command -v firewall-cmd >/dev/null 2>&1 || return 0   # 没装 firewalld 不算它的账
+    grep -rqs '53317' /etc/firewalld 2>/dev/null && return 0
+    local _ports _p
+    _ports="$(firewall-cmd --permanent --list-ports 2>/dev/null)"
+    case "$_ports" in *1024-65535*) return 0 ;; esac      # 被出厂范围规则覆盖
+    for _p in tcp udp; do                                 # 兜底: 让 firewalld 自己判(--query 认范围)
+        firewall-cmd --permanent --query-port="53317/$_p" >/dev/null 2>&1 || return 1
+    done
+    return 0
+}
+
+# 还原被 SteamOS 镜像裁掉的 C 开发头文件(/usr/include)。
+#   实证(2026-09-25): 镜像里 gcc/glibc 都在, 但 /usr/include 只剩 18 个条目,
+#   glibc 文件清单上的 510 个头文件实体一个不剩 —— 装 gcc 补不回来, 于是任何要编译
+#   C 代码的 AUR 包都死在 `fatal error: string.h：没有那个文件或目录`
+#   (wechat-universal-bwrap 的 libuosdevicea 桩; 可选组件 NextKde 同理)。
+#   ⚠️ 必须用**同版本**的包重装: 快照源 core-3.9 的 glibc 与本机同版(2.43+r37),
+#      滚动源 core 已经是 2.44 —— 拿后者装会把 libc 顶到比系统新, 部分升级有炸机风险。
+#      故先比版本, 不一致就只警告不动手(宁可编不了, 也不能把 libc 换新)。
+ensure_c_headers() {
+    [ -f /usr/include/stdio.h ] && [ -f /usr/include/string.h ] && return 0
+    sub "补装 C 开发头文件(/usr/include 被 SteamOS 镜像裁过)..."
+    local _p _iv _sv
+    for _p in glibc linux-api-headers; do
+        _iv="$(pacman -Q "$_p" 2>/dev/null | awk '{print $2}')"
+        # -Sp 取的是 pacman 真会装的那个仓库版本(快照源在前), 比 grep -Si 更贴实情
+        _sv="$(pacman -Sp --print-format '%v' "$_p" 2>/dev/null | head -1)"
+        if [ -n "$_sv" ] && [ "$_iv" != "$_sv" ]; then
+            warn "$_p: 仓库($_sv) ≠ 已装($_iv) —— 放弃重装(避免把 libc 升到滚动源版本)"
+            return 1
+        fi
+    done
+    # 故意不加 --needed: 就是要"重装同版本", 让 pacman 把文件再解一遍
+    pacman -S --noconfirm glibc linux-api-headers >/dev/null 2>&1 || true
+    if [ -f /usr/include/stdio.h ] && [ -f /usr/include/string.h ]; then
+        info "C 头文件已还原(需要编译的 AUR 包可正常构建)"
+        return 0
+    fi
+    warn "头文件仍未还原 —— 需编译的 AUR 包会报 string.h 找不到"
+    return 1
+}
+
+# ── pacman "文件系统中已存在" 的识别与重试(2026-09-26 新增) ────────────────
+#   现场(2026-09-26): 一次重装里 workbuddy / wechat-universal-bwrap 都由 AUR 安装失败, 报
+#     workbuddy: 文件系统中已存在 /opt/WorkBuddy/app.asar.unpacked/resources/trayTemplate.png
+#     wechat-universal-bwrap: 文件系统中已存在 /opt/wechat-universal/wechat
+#     发生错误，没有软件包被更新。
+#   根因**不是**包损坏、也不是网络: 这两个包都把主体装进 /opt, 而 /opt 是 offload(→/home 分区)。
+#   原子升级整块换 rootfs 时, /opt 里的文件幸存, /usr 里的入口/运行时 + pacman DB 记录被冲掉
+#   → 变成"文件在、台账没了"的孤儿。之后再装同一个包, pacman 看到文件已存在就拒绝覆盖。
+#   实证: `pacman -Qo <路径>` 回"没有软件包拥有", DB 目录里也没有该包记录。
+#   对策: 检测到这类报错 → 带 --overwrite 重试一次; 并在日志里说清"这是在覆盖孤儿文件"。
+#   为什么不一上来就带 --overwrite: 它会掩盖真实的包间冲突(两个包争同一个文件), 该报的还得报。
+PACMAN_CONFLICT_RE='文件系统中已存在|exists in filesystem'
+aur_conflict_retry() {
+    # 用法: aur_conflict_retry <日志文件> <助手名> <包名...>
+    # 前提: 调用方已经用"不带 --overwrite"跑过一次并把输出落到 <日志文件>
+    local _log="$1" _helper="$2"; shift 2
+    grep -qE "$PACMAN_CONFLICT_RE" "$_log" 2>/dev/null || return 1
+    warn "检测到 pacman「文件系统中已存在」—— 典型是原子升级后 /opt 里留下的**孤儿文件**"
+    sub "(文件还在、pacman 台账已被 rootfs 替换冲掉; 不是包损坏, 也不是网络问题)"
+    # 只对"无主"路径才认这条: 万一真有包拥有这些文件, 说明是真冲突, 别硬盖。
+    # ⚠️ 抽路径的正则**必须给交替加括号**:
+    #      '文件系统中已存在|exists in filesystem .*'  ← 错! 交替优先级低, 等价于
+    #         ('文件系统中已存在') | ('exists in filesystem .*'), 左支没 .* → 只抓到短词, 路径全丢(实测踩过)
+    #      '(文件系统中已存在|exists in filesystem) .*' ← 对, 两支都能带上路径
+    #    pacman 行式是 `<包名>: 文件系统中已存在 <路径>`, 故再剥掉"包名: "前缀。
+    local _p _owner _orphan=0
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        case "$_p" in /*) ;; *) continue ;; esac        # 只要绝对路径
+        _owner="$(pacman -Qo "$_p" 2>/dev/null || true)"
+        if [ -n "$_owner" ]; then
+            warn "  冲突路径 $_p 其实**有**包拥有($_owner) → 这是真冲突, 不覆盖"
+        else
+            sub "孤儿(无包拥有): $_p"
+            _orphan=$((_orphan + 1))
+        fi
+    done < <(grep -oE '(文件系统中已存在|exists in filesystem)[[:space:]]+/[^[:space:]]*' "$_log" 2>/dev/null \
+             | sed -E 's/^[^:]*: //' | sed -E 's/^[^/]*\//\//' | sort -u | head -20)
+    [ "$_orphan" -gt 0 ] || { warn "未能确认孤儿路径 → 保守起见不自动覆盖"; return 1; }
+    info "确认 $_orphan 条孤儿路径 → 带 --overwrite 重试一次(覆盖的是无主文件)"
+    case "$_helper" in
+        yay)  runuser -u "$REAL_USER" -- yay -S --noconfirm --needed \
+                  --answerclean=N --answerdiff=N --answeredit=N --overwrite='*' "$@" 2>&1 ;;
+        paru) runuser -u "$REAL_USER" -- paru -S --noconfirm --needed --skipreview \
+                  --overwrite='*' "$@" 2>&1 ;;
+        pacman) pacman -S --noconfirm --needed --overwrite='*' "$@" 2>&1 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 收尾: 把 /home 里新建的东西还给真实用户。
+#   为什么必须做(2026-09-25 实测): 脚本以 root 跑, 它往 /home 写的东西属主就是 root。
+#   后果不只是"难看" —— install-harmony-sans-home.sh 第二次运行时, 被 root 属主的
+#   ~/.cache/harmony-sans 顶回来 "mkdir: 权限不够", 用户自己完全修不动; 那些
+#   特意装进 /home 以便自更新的工具(firefox/glow/dsh-desktop)同样写不进自己的目录。
+#   只扫脚本碰过的路径, 不对整个 /home 递归(会扫到 Steam 的几十万文件)。
+fix_home_owner() {
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ -n "${REAL_USER:-}" ] || return 0
+    local _rg _p
+    _rg="$(id -gn "$REAL_USER" 2>/dev/null || printf '%s' "${REAL_GROUP:-$REAL_USER}")"
+    for _p in \
+        "$REAL_HOME/.cache/harmony-sans" "$REAL_HOME/.cache/glow" \
+        "$REAL_HOME/.cache/localsend" "$REAL_HOME/.cache/firefox-nightly" \
+        "$REAL_HOME/.cache/dsh-desktop" "$REAL_HOME/.cache/decky-store.json" \
+        "$REAL_HOME/.local/share/fonts" "$REAL_HOME/.config/fontconfig" \
+        "$REAL_HOME/.config/glow" "$REAL_HOME/.local/opt" \
+        "$REAL_HOME/.local/bin" "$REAL_HOME/.local/share/applications" \
+        "$REAL_HOME/.cache/ge-proton" "$REAL_HOME/.cache/dwproton" \
+        "$REAL_HOME/Downloads/dwproton-dl" "$REAL_HOME/.local/share/icons" \
+        "$REAL_HOME/homebrew" ; do     # Decky: 以 root 装插件会把 plugins/ 写成 root 属主, 用户自己清不动
+        if [ -e "$_p" ]; then
+            chown -R "$REAL_USER:$_rg" "$_p" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
+
 # 落地复核: 真正检查东西在不在, 而不是信退出码
 verify_step() {
     case "$1" in
@@ -420,8 +557,12 @@ verify_step() {
                        [ -f /etc/systemd/system/plugin_loader.service ] ;;
         # 认"任一自定义兼容层"而非只认 GE-Proton: 只装了 dwproton(终末地 ACE 必需)
         # 而没装 GE-Proton 的机器, 若只判 GE-Proton 会每次都误判缺失、白白重下一次。
-        setup_games)   ls -d "$REAL_HOME/.local/share/Steam/compatibilitytools.d/"*/ \
-                            "$REAL_HOME/.steam/steam/compatibilitytools.d/"*/ >/dev/null 2>&1 ;;
+        # 光看"有目录"不够: tar 解到一半失败也会留下空目录(2026-09-25 静态审查发现 ——
+        # 它和"先删旧版再解包"的写法一配合, 就会出现"目录在、proton 没有"却判达标的假绿灯)。
+        # 必须真有 proton 文件才算数。
+        setup_games)   find "$REAL_HOME/.local/share/Steam/compatibilitytools.d" \
+                            "$REAL_HOME/.steam/steam/compatibilitytools.d" \
+                            -maxdepth 2 -name proton -type f 2>/dev/null | grep -q . ;;
         setup_dsh)     [ -x "$REAL_HOME/.local/bin/dsh" ] || [ -x /usr/bin/dsh ] ;;   # 新旧布局都认
         # skipped 也要算达标(本机不适用), 否则 --adopt 后重跑会因"未完成"反复装
         setup_tdp)     local _tv; _tv="$(state_get setup_tdp)"
@@ -433,20 +574,44 @@ verify_step() {
         setup_gpu)     return 0 ;;   # 纯提示步骤, 无落地物, 恒视为完成
         # 注意: 光查 /home 下两个文件不够 —— sudoers 在 /etc, 升级必被冲;
         # 少了它自愈服务起得来但没权限重建 /etc 下的东西(等于自愈失效)。
+        # 注意 wants 软链这一条: 单元文件在 ≠ 单元已启用。2026-09-25 实测首次装完
+        # default.target.wants 里只有 gamemoded —— 文件齐、服务却是 disabled, 自愈永不触发。
+        # 还要查免密规则里**有没有开发文件补齐器那条**(v3 新增): 只查 drop-in 存在, 会让
+        # "旧规则缺新条目"的机器被判完成 → 升级后开发文件永远不会被自动补回来。
+        # 2026-09-25 起再查两层: ① 快照在不在(/opt 扛升级) ② 规则是否真的指向快照
+        # (指向备份包的老规则 = 用户可写的提权口子 + 挪位置就失配, 必须被重写)。
+        # ⚠️ 2026-09-27 第三次踩同一个坑: 新增第三条规则(补依赖 fix-opt-deps.sh)时
+        #    只写了规则生成、**忘了加进这里的落地判据** → 结果实测: 跑步骤[12] 被
+        #    "[跳过] 已完成于 2026-09-26" 拦下, 缺的那条规则永远补不上(自愈链瘸腿)。
+        #    教训: **"生成规则"和"判定规则"是两处, 加规则必须同时改两处** ——
+        #    已加 check.sh 断言做交叉核对(把 SNAP_* 里的脚本名与这里的判据自动比)。
         setup_selfheal) [ -f "$REAL_HOME/.config/systemd/user/steamos-self-heal.service" ] && \
+                        [ -f "$REAL_HOME/.config/systemd/user/default.target.wants/steamos-self-heal.service" ] && \
+                        [ -f "$REAL_HOME/.config/systemd/user/steamos-self-heal.timer" ] && \
+                        [ -f "$REAL_HOME/.config/systemd/user/timers.target.wants/steamos-self-heal.timer" ] && \
                         [ -f "$REAL_HOME/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh" ] && \
-                        [ -f /etc/sudoers.d/steamos-self-heal ] ;;
+                        [ -f /opt/steamos-backup/steamos-setup.sh ] && \
+                        [ -f /opt/steamos-backup/fix-missing-dev-files.sh ] && \
+                        [ -f /opt/steamos-backup/fix-opt-deps.sh ] && \
+                        compgen -G '/etc/sudoers.d/*steamos-self-heal' >/dev/null && \
+                        grep -qs 'NOPASSWD: /usr/bin/bash /opt/steamos-backup/steamos-setup.sh' /etc/sudoers.d/*steamos-self-heal 2>/dev/null && \
+                        grep -qs 'fix-missing-dev-files' /etc/sudoers.d/*steamos-self-heal 2>/dev/null && \
+                        grep -qs 'fix-opt-deps' /etc/sudoers.d/*steamos-self-heal 2>/dev/null ;;
         # flatpak --user 的应用目录在 /home, 原子升级幸存; 名字含 wiliwili 即算达标
         setup_wiliwili) compgen -G "$REAL_HOME/.local/share/flatpak/app/*wiliwili*" >/dev/null ;;
         # LocalSend: 程序在 /home(幸存), 但**防火墙规则在 /etc(升级必被冲)** ——
         # 两处都要判, 否则"程序还在但搜不到对端"会被误判成完好而跳过重建。
+        # ⚠️ 防火墙判据见 fw_53317_ok() —— 不能用 grep 找字面量 '53317',
+        #    SteamOS 出厂就开了 1024-65535 范围, 显式端口根本不会写进配置。
         setup_localsend) [ -x "$REAL_HOME/.local/bin/localsend" ] && \
                          [ -e "$REAL_HOME/.local/opt/localsend/app/AppRun" ] && \
-                         { ! command -v firewall-cmd >/dev/null 2>&1 || \
-                           grep -rqs '53317' /etc/firewalld 2>/dev/null; } ;;
+                         fw_53317_ok ;;
         # glow: 二进制与桌面项都在 /home(两处都判 —— 只有二进制时双击 .md 不会走它)
         setup_mdread)  [ -x "$REAL_HOME/.local/bin/glow" ] && \
                        [ -f "$REAL_HOME/.local/share/applications/glow-markdown.desktop" ] ;;
+        # Firefox Nightly: 程序 + 桌面项都在 /home(两处都判, 与 glow 同理)
+        setup_firefox) [ -x "$REAL_HOME/.local/opt/firefox-nightly/firefox/firefox" ] && \
+                       [ -f "$REAL_HOME/.local/share/applications/firefox-nightly.desktop" ] ;;
         clean_rootfs)  return 0 ;;
         *)             return 0 ;;
     esac
@@ -630,13 +795,105 @@ PYEOF
         fi
     fi
 
-    # 4) 刷新
+    # 4) 仓库刷新(可跳过)。
+    #    ⚠️ PREPARE_NO_REFRESH=1 的意义(2026-09-26 实测的悖论): 步骤[12] 的工作是
+    #    重建免密规则/快照/服务软链 —— **全是文件操作, 不装包, 与 pacman 无关**。
+    #    若它也陪跑 pacman -Sy, 就会出现"修锁的人被锁挡在门外": 现场是补齐器
+    #    (fix-missing-dev-files --apply)持锁下载 KDE 包, 用户跑步骤[12]想恢复免密,
+    #    却死在环境准备的 -Sy 上 → 免密永远建不起来 → 自愈链死循环更进一层。
+    #    该步骤设此开关后直达正题, 锁/网络再堵也拦不住它。
+    if [ "${PREPARE_NO_REFRESH:-0}" -eq 1 ]; then
+        info "本步不装包 → 跳过仓库刷新(不受 pacman 锁/网络影响)"
+        info "环境准备完成"
+        return 0
+    fi
+
+    # 4b) 刷新前先确认 pacman 没被别人占着
+    #    Discover/pamac/Steam 后台更新都可能正在跑; 抢锁时每条装包命令都会以
+    #    "unable to lock database" 失败, 表象却是"这个包装不上", 极费排查时间。
+    #
+    #    ⚠️ 2026-09-26 实测两处 bug(现场: 用户手动跑步骤[3], 报"无法锁定数据库",
+    #       脚本却把原因归到"源的问题"上, 把人带偏):
+    #       ① **锁路径写错了** —— 写死 /var/lib/pacman/db.lck, 而本机 DB 真身在
+    #          /usr/lib/holo/pacmandb/(/var/lib/pacman 在本机根本不存在, 见 §3)。
+    #          于是守卫**从没生效过**, 每次都直接落到 pacman -Sy 失败。
+    #          → 改为**运行时探测** DB 目录(优先 holo, 退回 /var/lib), 不写死。
+    #       ② **不给等待** —— 最可能的持锁者恰恰是**我们自己的自愈链**
+    #          (/opt/steamos-backup/fix-missing-dev-files.sh 正在补开发文件),
+    #          它下完包就自己放手。升级后那几分钟里手动重跑必然撞上, 直接退出太粗暴。
+    #          → 先**等一小会儿**(默认 180 秒, 可用 PACMAN_LOCK_WAIT 调), 等不到再退出。
+    local PACDB="" _c
+    for _c in /usr/lib/holo/pacmandb /var/lib/pacman; do
+        [ -d "$_c" ] && { PACDB="$_c"; break; }
+    done
+    [ -n "$PACDB" ] || PACDB=/var/lib/pacman
+    local LCK="$PACDB/db.lck"
+    local WAIT="${PACMAN_LOCK_WAIT:-180}"
+    if [ -e "$LCK" ]; then
+        # 谁在持锁? 是 pacman 本体, 还是我们的自愈链在跑? (说清楚, 用户才知道该怎么办)
+        # ⚠️ 匹配要**只认 pacman/yay/paru 本体** —— 用 -f 全命令行匹配会把
+        #    `gpg-agent --homedir /etc/pacman.d/gnupg` 这种"路径里含 pacman"的进程也抓进来
+        #    (实测踩过), 列出来只会让人更糊涂。故用 -x 匹配可执行名(`pacman`/`yay`/`paru`)
+        #    + 单独用 -f 抓我们的自愈脚本名。
+        local holder holder_script
+        holder="$(pgrep -x pacman -a 2>/dev/null; pgrep -x yay -a 2>/dev/null; pgrep -x paru -a 2>/dev/null)"
+        holder_script="$(pgrep -f 'fix-missing-dev-files\.sh' 2>/dev/null | head -2)"
+        if [ -n "$holder" ]; then
+            warn "pacman 正被占用(锁: $LCK) —— 持有者:"
+            printf '%s\n' "$holder" | sed 's/^/      /'
+            if [ -n "$holder_script" ]; then
+                info "看起来是**本项目的自动恢复链**在补开发文件 —— 它下完包会自己放手"
+                sub "（升级/重装后头几分钟最常见; 干等一会儿通常就过了）"
+            fi
+            sub "最多等 ${WAIT}s(可用 PACMAN_LOCK_WAIT=秒数 调整)..."
+            local _w=0
+            while [ -e "$LCK" ] && [ "$_w" -lt "$WAIT" ]; do
+                sleep 3; _w=$((_w + 3))
+                [ $((_w % 30)) -eq 0 ] && sub "  已等 ${_w}s —— 仍在等锁释放"
+            done
+            if [ -e "$LCK" ]; then
+                err "等了 ${WAIT}s 锁还没释放 —— 让持有者跑完再重跑本脚本"
+                sub "看它在干什么: pgrep -x pacman -a"
+                sub "若持有者是在补开发文件/装大包(KDE 那套可能要 1 小时+), 可加大等待:"
+                sub "    PACMAN_LOCK_WAIT=3600 sudo bash $SCRIPT_NAME …"
+                sub "只想恢复免密的话: 步骤[12] 不受锁影响, 现在就能跑"
+                sub "    sudo bash $SCRIPT_NAME 12"
+                exit 1
+            fi
+            info "锁已释放, 继续"
+        else
+            warn "锁 $LCK 存在, 但没有任何 pacman/yay/paru 进程 —— 多半是上次异常退出的残留"
+            sub "确认此刻没人在用 pacman 后删掉它: sudo rm -f $LCK"
+            exit 1
+        fi
+    fi
     sub "刷新仓库(pacman -Sy)..."
     if ! pacman -Sy --noconfirm >/dev/null 2>&1; then
-        warn "pacman -Sy 刷新失败 —— 多半还是源的问题, 关键错误如下:"
-        pacman -Sy 2>&1 | grep -iE "错误|error|404|failed" | head -6 | sed 's/^/    /'
+        # 区分"锁"与"源": 锁的问题刚才已经拦过, 这里多半真是源/网络; 但仍复核一次,
+        # 免得"锁"换个面貌(例如刚被别的进程抢到)又被误报成源的问题。
+        local SYERR; SYERR="$(pacman -Sy --noconfirm 2>&1 | head -20)"
+        if printf '%s' "$SYERR" | grep -qE '无法锁定数据库|unable to lock|failed to init transaction'; then
+            err "pacman -Sy 因**锁**失败(不是源的问题!): 有另一个 pacman 正在跑"
+            sub "持有者: $(pgrep -x pacman -a 2>/dev/null | head -2 | tr '\n' ' ')"
+            sub "等它跑完再重跑本脚本; 或 PACMAN_LOCK_WAIT=600 sudo bash $SCRIPT_NAME …"
+            exit 1
+        fi
+        warn "pacman -Sy 刷新失败 —— 关键错误如下:"
+        printf '%s\n' "$SYERR" | grep -iE "错误|error|404|failed" | head -6 | sed 's/^/    /'
         warn "排查: ① cat $MIRROR_ARCH ② grep -A2 '^\\[core\\]' /etc/pacman.conf ③ 网络/代理"
         warn "各步会重试; 若持续 404, 确认 core/extra 的 Include 已指向 mirrorlist-arch"
+        # ⚠️ 不能只 warn 就往下跑(2026-09-25 静态审查指出): 包列表是旧的, 后面的装包步骤会
+        #    按过期列表解析依赖 —— 正是"部分升级"的典型风险(依赖与已装版本错配, 可能拆 KDE)。
+        #    宁可停下来说清楚。自动恢复场景不受影响: 自愈服务带 20 分钟重试定时器, 网络恢复后
+        #    下一轮自动补上; 只有"确实只想跑本地文件类步骤"时才用 PKG_ALLOW_STALE=1 放行。
+        if [ "${PKG_ALLOW_STALE:-0}" -eq 1 ]; then
+            warn "PKG_ALLOW_STALE=1 → 继续运行; 装包步骤可能拿到过期包列表, 风险自负"
+        else
+            err "源不可用 → 已中止(本次未做任何改动)。"
+            echo "      修好源后重跑: sudo bash $SCRIPT_NAME"
+            echo "      只跑本地文件类步骤(跳过装包, 风险自负): sudo bash $SCRIPT_NAME --allow-stale-db …"
+            exit 1
+        fi
     else
         info "仓库已同步"
     fi
@@ -647,7 +904,7 @@ PYEOF
 #  [1] archlinuxcn 源
 # ===========================================================================
 setup_cn() {
-    step "[1/15] archlinuxcn 软件源"
+    step "[1/16] archlinuxcn 软件源"
     prepare "$@"
     # 确保官方源存在(archlinuxcn 依赖它)
     if [ "$HAS_CORE" -eq 0 ] || [ "$HAS_EXTRA" -eq 0 ]; then
@@ -700,7 +957,7 @@ setup_cn() {
 #  全量运行 / 断点续传 / 落地复核 / --adopt 均正常工作。
 # ===========================================================================
 setup_im() {
-    step "[2/15] 输入法 —— 已禁用"
+    step "[2/16] 输入法 —— 已禁用"
     info "按 2026-09-24 要求跳过: 不改动系统输入法相关内容"
     return 0
 }
@@ -727,7 +984,7 @@ rootfs_report() {
 }
 
 clean_rootfs() {
-    step "[8/15] rootfs 瘦身"
+    step "[8/16] rootfs 瘦身"
     if [ "$(id -u)" -ne 0 ]; then
         warn "需要管理员权限(密码在终端输入), 重新以 sudo 运行..."
         exec sudo -E bash "$0" clean
@@ -779,7 +1036,7 @@ clean_rootfs() {
 #     仅是让 Electron 走原生 Wayland 的无害加固(非必需), 与 setup_im 配合使用。
 # ===========================================================================
 setup_wb() {
-    step "[3/15] WorkBuddy (AUR 包, 最可靠能打中文)"
+    step "[3/16] WorkBuddy (AUR 包, 最可靠能打中文)"
     prepare "$@"
 
     # ── rootfs 空间预检 ──
@@ -866,12 +1123,25 @@ setup_wb() {
             warn "手工最小集: sudo pacman -S --needed --asdeps make gcc binutils pkgconf fakeroot debugedit"
             exit 1
         }
-        # 装后复核: 最小集能让 pacman -Q base-devel 判为已装(组查询展开)
-        pacman -Qq base-devel >/dev/null 2>&1 && info "工具链就绪(base-devel 组判定通过)" \
-            || warn "最小集未让 base-devel 判定通过——手工补装后重跑本步"
+        # 装后复核: **逐包**确认。不能查 `pacman -Qq base-devel` —— 那是"整组"查询,
+        # 最小集必然缺组里成员(autoconf/bison/texinfo…), 于是每台机器都白报一次
+        # "未让 base-devel 判定通过"(2026-09-25 实测就撞上了这条假警报)。
+        local _bd_miss="" _bd_p
+        # shellcheck disable=SC2086  # 故意按空格拆成多包
+        for _bd_p in $BD_MIN; do
+            pacman -Qq "$_bd_p" >/dev/null 2>&1 || _bd_miss="$_bd_miss $_bd_p"
+        done
+        if [ -z "$_bd_miss" ]; then
+            info "工具链就绪(最小集齐全: $(printf '%s' "$BD_MIN" | tr ' ' '/'))"
+        else
+            warn "工具链缺:$_bd_miss —— 手工补装后重跑本步"
+        fi
     else
         info "编译工具链已就绪(base-devel 判定通过)"
     fi
+    # ── C 开发头文件(镜像裁过 /usr/include, 见 ensure_c_headers 注释) ──
+    #    没有它, 任何要编译 C 的 AUR 包都会死在 string.h 找不到。
+    ensure_c_headers
     info "git: $(pacman -Qq git 2>/dev/null || echo 缺)"
     # 确认依赖 electron/asar 在仓库可及(asar 是 makedepends, electron 是 depends)
     # ⚠️ electron 是"元包"(Meta package, 体积显示 0.00K), 真实体积在其依赖的
@@ -921,21 +1191,79 @@ setup_wb() {
 
     # 装 workbuddy(AUR)。yay/paru 需以普通用户跑(makepkg 禁 root)。
     if ! pacman -Qq workbuddy >/dev/null 2>&1; then
+        # ── 预检: /opt/WorkBuddy 留有**无主**文件 → 孤儿现场, 直接带 --overwrite ──
+        #   (2026-09-26 现场: 撞锁失败过一轮后, 11:27 那次又是"两轮注定失败 + 一轮重试",
+        #    每轮都要输一次 sudo 密码 —— 输三轮密码才能装上, 太蠢。预检命中就一轮搞定。)
+        #   判据: 包不在 DB + 主体目录在 + 抽样文件全部无主(pacman -Qo) → /opt 是 offload,
+        #   升级冲掉 DB 留下文件, 与 §13.7 同源。--overwrite 只覆盖包自带的同名路径,
+        #   不在包清单里的用户文件不受影响。
+        local WB_OV=()
+        if [ -e /opt/WorkBuddy/app.asar.unpacked ]; then
+            local _s _own=0 _n=0
+            while IFS= read -r _s; do
+                [ -n "$_s" ] || continue
+                _n=$((_n + 1))
+                pacman -Qo "$_s" >/dev/null 2>&1 && _own=$((_own + 1))
+            done < <(find /opt/WorkBuddy -maxdepth 3 -type f 2>/dev/null | head -15)
+            if [ "$_n" -gt 0 ] && [ "$_own" -eq 0 ]; then
+                info "/opt/WorkBuddy 抽样 ${_n} 个文件均无包拥有 → 孤儿现场(升级幸存、DB 被冲)"
+                info "直接带 --overwrite 安装, 不再白跑注定失败的轮次(少输两次 sudo 密码)"
+                WB_OV=(--overwrite='*')
+            fi
+        fi
+        # 统一日志: 首轮输出同时上屏与落盘, 后面所有判定/兜底都读这一份
+        # (⚠️ homedir() 会对**整个参数** mkdir -p: 只能喂目录, 文件名自己拼 ——
+        #  2026-09-26 11:23 实测踩过: 传文件名进去 → "tee: …: 是一个目录")
+        local WB_LOG=""
+        homedir .cache >/dev/null 2>&1
+        WB_LOG="$REAL_HOME/.cache/steamos-setup-wb-install.log"
+        : > "$WB_LOG"
         sub "从 AUR 安装 workbuddy(联网下载约 800MB deb + 解包, 需 10~20 分钟)..."
         warn "本步下载大且耗时, 请勿中途断开; 失败后重跑本步即可(幂等)。"
-        # 清屏输出保留给用户看(不用 tail 吞掉, 失败也看得到原因)
+        # 清屏输出保留给用户看(tee 会透传, 不吞输出)
         if [ "$AURHELP" = "yay" ]; then
             runuser -u "$REAL_USER" -- yay -S --noconfirm --needed \
-                --answerclean=N --answerdiff=N --answeredit=N workbuddy 2>&1
+                --answerclean=N --answerdiff=N --answeredit=N "${WB_OV[@]}" workbuddy 2>&1 | tee "$WB_LOG"
         else
-            runuser -u "$REAL_USER" -- paru -S --noconfirm --needed --skipreview workbuddy 2>&1
+            runuser -u "$REAL_USER" -- paru -S --noconfirm --needed --skipreview "${WB_OV[@]}" workbuddy 2>&1 | tee "$WB_LOG"
+        fi
+        # ② 孤儿兜底: 预检没命中但首轮报"文件系统中已存在"(理论少见) → 确认后带 --overwrite 重试
+        if ! pacman -Qq workbuddy >/dev/null 2>&1; then
+            aur_conflict_retry "$WB_LOG" "$AURHELP" workbuddy || true
+        fi
+        # ③ RPC 兜底(2026-09-26 两次现场: aur.archlinux.org/rpc 间歇性连不上, unexpected EOF):
+        #   上次构建好的包还在助手的 clone 缓存里 → pacman -U 直装,**不联网、不要密码**(本脚本已是 root)。
+        #   --overwrite 沿用预检结论(孤儿现场必带; 非孤儿现场为空数组, 不掩盖真冲突)。
+        if ! pacman -Qq workbuddy >/dev/null 2>&1 \
+           && grep -q 'aur.archlinux.org/rpc' "$WB_LOG" 2>/dev/null; then
+            local WB_PKG="" _cd _p
+            for _cd in "$REAL_HOME/.cache/paru/clone/workbuddy" "$REAL_HOME/.cache/yay/workbuddy"; do
+                _p="$(ls -1t "$_cd"/workbuddy-*.pkg.tar.zst 2>/dev/null | head -1 || true)"
+                [ -n "$_p" ] && { WB_PKG="$_p"; break; }
+            done
+            if [ -n "$WB_PKG" ]; then
+                warn "AUR RPC 连不上, 但发现**上次构建好的本地包**: $WB_PKG"
+                info "pacman -U 直装(不联网; 版本以上次构建为准, AUR 恢复后可再升级)..."
+                pacman -U --noconfirm --needed "${WB_OV[@]}" "$WB_PKG" 2>&1 | tail -6
+            else
+                warn "AUR RPC 连不上, 且本地没有已构建的包 → 只能等 AUR 可达后重跑本步"
+            fi
         fi
         if ! pacman -Qq workbuddy >/dev/null 2>&1; then
             err "workbuddy 安装失败"
+            # 这次日志里若是锁的问题, 第 ⓪ 条直接命中, 别让用户往网络/包上猜
+            if [ -f "$WB_LOG" ] && grep -qE '无法锁定数据库|unable to lock' "$WB_LOG" 2>/dev/null; then
+                warn "  ⓪ 这次失败是**锁**: 有另一个 pacman 在跑(常见: 补齐器在装包)"
+                warn "     等它结束再重跑本步: pgrep -x pacman -a 输出为空即可"
+            fi
             warn "常见原因与排查:"
             warn "  ① 网络无法下载 800MB deb(codebuddy CDN) → 检查网络后重跑本步"
             warn "  ② base-devel/asar/electron 未装 → 先跑环境准备确认 extra 源"
             warn "  ③ 磁盘空间不足 → 上一步已预检, 若仍失败查看 df -h /"
+            warn "  ④ 报「文件系统中已存在 /opt/WorkBuddy/...」→ 孤儿文件(升级幸存、DB 被冲),"
+            warn "     本步已自动尝试 --overwrite; 若仍失败可手工:"
+            warn "       yay -S --overwrite='*' workbuddy     (或 pacman -Qo 逐条确认无主后删掉)"
+            warn "  AUR 连不上时(aur.archlinux.org 的 RPC 报 unexpected EOF)属网络问题, 换个网/DNS 再试"
             exit 1
         fi
     fi
@@ -1047,7 +1375,7 @@ EOF
 #  (守护进程 py 放 /home, /etc 只留 systemd unit + udev + inputplumber 配置)
 # ===========================================================================
 setup_backkey() {
-    step "[4/15] GPD Win5 背键 + InputPlumber(deck 手柄 / 背键 / Home / KB)"
+    step "[4/16] GPD Win5 背键 + InputPlumber(deck 手柄 / 背键 / Home / KB)"
     prepare "$@"
 
     # ── 设备检测: 换机型重装时自动跳过本步 ──
@@ -1256,7 +1584,13 @@ EOF
     fi
     systemctl enable "$SERVICE" >/dev/null 2>&1
     systemctl restart "$SERVICE" 2>/dev/null
-    info "服务已装(/etc, 仅几百字节)"
+    # enable 的退出码被吞了, 必须回查 is-enabled: "unit 文件在 ≠ 已启用"(§11.3 那类假成功)。
+    # 背键守护没启用 = 背键在下次开机后失效, 而用户只看到一行"服务已装"。
+    systemctl is-enabled --quiet "$SERVICE" \
+        && info "服务已装并设为开机自启(/etc, 仅几百字节)" \
+        || warn "服务已装但**没能设为开机自启** —— 查: systemctl status $SERVICE"
+    systemctl is-active --quiet "$SERVICE" \
+        || warn "服务当前未运行(桌面手动 start 正常 / 游戏模式可能被 ordering cycle 卡住, 见 fix-inputplumber-cycle.sh)"
 
     # InputPlumber 覆盖配置
     if [ -f "$IP_DEFAULT" ]; then
@@ -1400,7 +1734,7 @@ EOF
 #  [5] Decky Loader  (二进制在 /home/homebrew, /etc 只留小 unit)
 # ===========================================================================
 setup_decky() {
-    step "[5/15] Decky Loader"
+    step "[5/16] Decky Loader"
     prepare "$@"
 
     local SERVICE_NAME="plugin_loader"
@@ -1497,6 +1831,9 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+    # 同上: enable 失败会被吞掉。is-active 只反映"此刻在跑", 不反映"开机自启" —— 两者都要查。
+    systemctl is-enabled --quiet "$SERVICE_NAME" \
+        || warn "plugin_loader 没能设为开机自启 —— 查: systemctl status $SERVICE_NAME"
     systemctl restart "$SERVICE_NAME"
     chown -R "$REAL_USER:$REAL_GROUP" "$HOMEBREW_FOLDER" 2>/dev/null || true
     sleep 2
@@ -1504,12 +1841,31 @@ EOF
         warn "未运行: journalctl -u $SERVICE_NAME -n 30"
 
     # ── 安装预置插件(Decky 装好后) ──
-    # 默认装 SteamGridDB(库封面美化) + ProtonDB Badges(兼容度角标); DECKY_PLUGINS="A B" 空格分隔自定义;
-    # DECKY_PLUGINS="" 显式置空则跳过。单插件失败不影响 Decky 本体与后续插件。
+    # 默认装 SteamGridDB(库封面美化) + ProtonDB Badges(兼容度角标)。
+    # ⚠️ 老写法 `for _pl in ${DECKY_PLUGINS-"SteamGridDB ProtonDB Badges"}` 有两个坑,
+    #    2026-09-25 实测的结果是两个插件一个都没装上(~/homebrew/plugins 里只有 TDP):
+    #      ① "ProtonDB Badges" 自带空格 —— 空格分隔的列表根本表达不了这个名字,
+    #         而 ${VAR-def} 把它当三个词拆, 去商店查的是"SteamGridDB ProtonDB Badges";
+    #      ② DECKY_PLUGINS 被显式置空(=空串)时, ${VAR-def} 取的是**空值**而非默认,
+    #         循环跑 0 次还一声不吭。
+    #    改成: 默认用数组; 显式置空 = 跳过(有提示); 自定义用 | 分隔: DECKY_PLUGINS='A|B C'
+    #    商店真实名可在 https://plugins.deckbrew.xyz 查(大小写敏感)。
     local _pl _pl_failed=0
-    for _pl in ${DECKY_PLUGINS-"SteamGridDB ProtonDB Badges"}; do
+    local -a _plugins=(SteamGridDB "ProtonDB Badges")
+    if [ -n "${DECKY_PLUGINS+x}" ]; then
+        _plugins=()
+        if [ -n "$DECKY_PLUGINS" ]; then
+            local IFS='|'
+            read -r -a _plugins <<< "$DECKY_PLUGINS"
+            IFS=$' \t\n'
+        fi
+    fi
+    [ "${#_plugins[@]}" -eq 0 ] && info "DECKY_PLUGINS 显式置空 —— 按设置跳过预置插件"
+    for _pl in "${_plugins[@]}"; do
         install_decky_plugin "$_pl" || { warn "插件 $_pl 安装失败, 可稍后在 Decky 商店手动装"; _pl_failed=1; }
     done
+    [ "$_pl_failed" -eq 1 ] && \
+        warn "有插件没装上 —— 可稍后从 Decky 商店(https://plugins.deckbrew.xyz)手动补"
     systemctl restart "$SERVICE_NAME" 2>/dev/null \
         && info "plugin_loader 已重启(加载新插件)" || warn "重启 Decky 失败(未运行?)"
 
@@ -1612,7 +1968,7 @@ install_decky_plugin() {
 #  设备检测: 仅 AMD/Intel APU; 有 NVIDIA 独显则跳过(插件明确不支持)。
 # ===========================================================================
 setup_tdp() {
-    step "[9/15] TDP 控制 (SimpleDeckyTDP 插件)"
+    step "[9/16] TDP 控制 (SimpleDeckyTDP 插件)"
     prepare "$@"
 
     local PLUGIN_DIR="$REAL_HOME/homebrew/plugins"
@@ -1797,7 +2153,7 @@ EOF
 #    再用下方写好的 python 写入启动选项。本体文件请用户自行备份放回。
 # ===========================================================================
 setup_games() {
-    step "[6/15] 游戏支持(GE-Proton + 鸣潮/终末地)"
+    step "[6/16] 游戏支持(GE-Proton + 鸣潮/终末地)"
     prepare "$@"
 
     local REPO="GloriousEggroll/proton-ge-custom"
@@ -1846,15 +2202,34 @@ setup_games() {
                     -o "$TMP/$TARBALL" "$u"; then ok=1; break; fi
             done
             if [ "$ok" -eq 1 ]; then
-                rm -rf "${TOOLS_DIR:?}/${TAG:?}"
-                tar -xzf "$TMP/$TARBALL" -C "$TOOLS_DIR" 2>/dev/null
-                chmod +x "$TOOLS_DIR/$TAG/proton" 2>/dev/null || true
-                chown -R "$REAL_USER:$REAL_GROUP" "$TOOLS_DIR" 2>/dev/null || true
-                info "GE-Proton $TAG 安装完成"
+                # 解包必须走"先落暂存 → 校验 → 再原子换上去"(2026-09-25 审查修的)。
+                # 旧写法是: 先 rm 掉旧版本 → tar -xzf ... 2>/dev/null (解包错误被吞) →
+                # 无条件打印"安装完成" → 还删掉下载缓存。后果是**包损坏/空间不足时**:
+                # 旧版没了、新版是空壳、下载也白下, 而用户看到的是一行 [✓] 安装完成。
+                # $TMP 与 compatibilitytools.d 同在 /home 分区 → mv 原子, 中断也不会留半个版本。
+                local STAGE="$TMP/extract"
+                rm -rf "${STAGE:?}"
+                mkdir -p "$STAGE" || { err "无法创建暂存解包目录: $STAGE"; return 1; }
+                if tar -xzf "$TMP/$TARBALL" -C "$STAGE" && [ -f "$STAGE/$TAG/proton" ]; then
+                    rm -rf "${TOOLS_DIR:?}/${TAG:?}"
+                    if mv "$STAGE/$TAG" "$TOOLS_DIR/$TAG"; then
+                        chmod +x "$TOOLS_DIR/$TAG/proton" 2>/dev/null || true
+                        chown -R "$REAL_USER:$REAL_GROUP" "$TOOLS_DIR" 2>/dev/null || true
+                        info "GE-Proton $TAG 安装完成"
+                        rm -rf "$TMP"        # 只有成功才清缓存; 失败保留, 重跑能续传(500MB 不白下)
+                    else
+                        err "移动到 $TOOLS_DIR 失败(空间不足?) —— 旧版本已删, 重跑本步会自动重下"
+                    fi
+                else
+                    err "解包失败或包不完整(下载损坏 / 空间不足) —— **旧版本与下载缓存都保留**"
+                    err "  缓存: $TMP/$TARBALL   (可自查: tar -tzf \"$TMP/$TARBALL\" | head)"
+                    err "  重跑本步会带 -C - 续传, 不用从头下"
+                    rm -rf "${STAGE:?}"
+                fi
             else
                 warn "GE-Proton 下载失败(所有镜像)。可设 GE_PROTON_TAG=... 或换 MIRROR=https://ghfast.top 重跑"
+                sub "下载缓存已保留: $TMP  —— 重跑会续传, 不会从 0 开始"
             fi
-            rm -rf "$TMP"
         fi
     fi
 
@@ -2051,7 +2426,7 @@ EOF
 #  用法: dsh web(浏览器 Web UI, 127.0.0.1:3080) / dsh run "任务"
 # ===========================================================================
 setup_dsh() {
-    step "[7/15] DeepSeek Harness (dsh, 补充 AI CLI)"
+    step "[7/16] DeepSeek Harness (dsh, 补充 AI CLI)"
     prepare "$@"
 
     # 固定到已实测可用的版本(dev-preview 会破坏兼容, 不追 latest)
@@ -2182,7 +2557,7 @@ EOF
 #  副作用: 无。只改时间同步服务器, 不动 atomupd 本身。
 # ===========================================================================
 setup_ntp() {
-    step "[10/15] 换境内 NTP(加速开机)"
+    step "[10/16] 换境内 NTP(加速开机)"
     prepare "$@"
 
     # 可配置 NTP 服务器(空格分隔), 默认阿里 + 腾讯
@@ -2245,7 +2620,7 @@ EOF
 #      老 Intel 核显/独显可能回退软件模式。Linux 支持: kernel 6.18+/Mesa 25.3+。
 # ===========================================================================
 setup_gpu() {
-    step "[11/15] GPU 加速建议(DLSS/FSR)"
+    step "[11/16] GPU 加速建议(DLSS/FSR)"
     prepare "$@"
 
     detect_hw   # 刷新检测
@@ -2348,27 +2723,108 @@ EOF
 #  本步解决: 部署一个「用户级自愈服务」(systemd user 服务, 放 /home, 本身扛升级),
 #  开机时自动检测这些落点, 缺了就用 sudo 调本脚本对应步骤(FORCE=1)重建。
 #
-#  落地物(全在 /home, 可扛系统升级):
-#    1. $REAL_HOME/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh  (自愈脚本)
-#    2. $REAL_HOME/.config/systemd/user/steamos-self-heal.service           (user 服务)
-#    3. /etc/sudoers.d/steamos-self-heal  (免密 sudo, 仅放行自愈脚本一条命令)
+#  落地物:
+#    1. $REAL_HOME/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh  (自愈脚本, 跑在用户身份)
+#    2. $REAL_HOME/.config/systemd/user/steamos-self-heal.{service,timer}    (user 服务 + 重试定时器)
+#    3. /opt/steamos-backup/                 (**免密快照**, root 属主)
+#    4. /etc/sudoers.d/zz-steamos-self-heal  (免密 sudo, 只放行快照里的两个脚本)
+#  ⚠️ 文件名刻意以 zz- 开头: sudoers 是 **last match wins** —— 若有别的规则
+#     (如 /etc/sudoers 主文件或更靠后的 sudoers.d 文件里的 %wheel ALL=(ALL) ALL)
+#     排在我们后面, 它的"要密码"会盖掉我们的 NOPASSWD, 规则就成了摆设
+#     (2026-09-25 实测: 文件在、被 include、内容正确, 但 sudo -n 仍要密码)。
+#     排到最后 = 我们对这几条具体命令的 NOPASSWD 永远赢。
+#
+#  ★ 为什么要"快照"(2026-09-25 改造) —— 免密规则指向谁, 谁就是 root 的门:
+#    ① **安全**: 规则若指向"用户可写的脚本"(备份包在 /home 或 /run/media, deck 自己能改),
+#       那就等于"任何能以 deck 身份执行代码的东西(Game/AUR/被投毒的配置)都能免密提权"。
+#       快照是 root:root, 用户改不动 → 门只有一个: 跑本步的 root 自己。
+#    ② **抗挪位**: 规则里是绝对路径; 以前备份包一挪位置, sudo -n 就静默失配(§11.9 悬案)。
+#    ③ **/opt 实测是 offload**(bind 到 home 分区) → 快照自己扛原子升级, 升级后连快照都不用重建。
+#    代价: 快照是"上次跑本步时的那套代码"; 仓库改了要重跑本步刷新 —— `doctor.sh` 会比对哈希并提醒。
+#    另外**不再**放行自愈脚本本身: 它是用户身份跑的, 根本不需要 sudo(那条规则是历史遗留,
+#    而且它落在用户可写目录 → 正是上面①那个口子)。
 #  注意: sudoers 文件在 /etc(系统分区), 升级会被冲 → 自愈服务首次触发时会发现
 #  sudo 失效, 但服务本身仍会跑(只是重建动作降级为"下次再试")。要彻底解决需
 #  每次升级后重跑一次本步。这已是最优解(无法把 sudoers 放 /home, systemd 不认)。
 # ===========================================================================
 setup_selfheal() {
-    step "[12/15] 系统升级后自愈服务"
+    step "[12/16] 系统升级后自愈服务"
+    # 本步不装包(重建免密规则/快照/服务软链, 全是文件操作) → 不需要刷新仓库。
+    # 这一步是"解锁其他一切"的钥匙, 绝不能反过来被 pacman 锁挡住
+    # (2026-09-26 实测: 补齐器持锁时, 步骤[12] 死在环境准备的 pacman -Sy 上,
+    #  免密永远重建不起来 → 自愈链死循环)。PREPARE_NO_REFRESH 的语义见 prepare()。
+    PREPARE_NO_REFRESH=1
     prepare "$@"
 
     local SH_DIR="$REAL_HOME/.local/opt/steamos-self-heal"
     local SH_SCRIPT="$SH_DIR/self-heal-after-upgrade.sh"
     local USER_UNIT="$REAL_HOME/.config/systemd/user/steamos-self-heal.service"
-    local SUDOERS="/etc/sudoers.d/steamos-self-heal"
+    local TIMER_UNIT="$REAL_HOME/.config/systemd/user/steamos-self-heal.timer"
+    # SNAP_DIR 见文件顶部全局常量(/opt 是 offload → 扛升级; 同步逻辑与启动自检共用同一路径)
+    local SUDOERS="/etc/sudoers.d/zz-steamos-self-heal"
+    local SUDOERS_LEGACY="/etc/sudoers.d/steamos-self-heal"   # 2026-09-25 之前的文件名
 
     # ── 1. 安装自愈脚本(若备份包里没有, 就内嵌生成) ──
     local SH_SRC MAIN_ABS
     SH_SRC="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/self-heal-after-upgrade.sh"
     MAIN_ABS="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/steamos-setup.sh"
+    # 开发文件补齐器(同一备份包): 原子升级会把 /usr 的 include/cmake/pkgconfig 整块摘掉,
+    # 自愈服务靠它自动补回来 —— 所以免密规则也得放行它(见 SCRIPT-MAINTENANCE §12)。
+    local DEV_ABS
+    DEV_ABS="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/fix-missing-dev-files.sh"
+    local SRC_DIR
+    SRC_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+
+    # ── 0. 同步"免密快照"到 /opt/steamos-backup(root 属主; 见函数头 ★ 段) ──
+    #   整个顶层一起搬: 主脚本会调用同目录的兄弟脚本(install-workbuddy-home.sh /
+    #   install-app-home.sh / fix-missing-dev-files.sh / 20-gpd_win5.capmap.yaml…),
+    #   挑着搬迟早漏一个 —— 全套才 1.4MB, 不值当为省这点去维护"哪些文件必须带"的清单。
+    local SNAP_MAIN="$SNAP_DIR/steamos-setup.sh"
+    local SNAP_DEV="$SNAP_DIR/fix-missing-dev-files.sh"
+    sync_snapshot() {
+        local src="$1" f base n=0
+        mkdir -p "$SNAP_DIR" || return 1
+        for f in "$src"/*; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f")"
+            case "$base" in .gitignore|*.pyc) continue ;; esac
+            install -m 0644 -o root -g root "$f" "$SNAP_DIR/$base" || return 1
+            case "$base" in *.sh) chmod 0755 "$SNAP_DIR/$base" ;; esac
+            n=$((n + 1))
+        done
+        chown root:root "$SNAP_DIR" 2>/dev/null || true
+        chmod 0755 "$SNAP_DIR" 2>/dev/null || true
+        # 盖个"来源戳": 记下这次是从哪份源码同步的 + 那一份主脚本的 sha256。
+        #   用处见 warn_stale_snapshot(): 以后若有人跑的是**快照那份**, 能立刻比对出
+        #   "快照已落后于仓库" —— 2026-09-26 因为这个吃了两次亏(修好的 bug 又原样复现,
+        #   排查才发现跑的是旧快照)。
+        if command -v sha256sum >/dev/null 2>&1; then
+            {
+                printf 'SRC=%s\n' "$src"
+                printf 'SHA=%s\n' "$(sha256sum "$src/steamos-setup.sh" 2>/dev/null | cut -d' ' -f1)"
+                printf 'TIME=%s\n' "$(date '+%F %T')"
+            } > "$SNAP_DIR/.snapmeta" 2>/dev/null || true
+        fi
+        printf '%s' "$n"
+    }
+    local SNAP_N=""
+    if [ "$(id -u)" -eq 0 ]; then
+        # ⚠️ 快照自己的副本不能当刷新源: 否则"用快照跑步骤[12]"就能免密覆盖快照(= 把提权口子开回来)。
+        #    想刷新必须用**仓库里那份**(要输一次密码) —— 这道门槛是快照安全的另一半。
+        if [ "$SRC_DIR" = "$SNAP_DIR" ]; then
+            warn "你在跑快照自己的副本, 没有可刷新的源 —— 源码目录就是快照目录"
+            sub "想刷新快照: 用仓库里那份, 需要输一次密码: sudo bash <备份包>/steamos-setup.sh 12"
+            SNAP_N="$(ls -1 "$SNAP_DIR" 2>/dev/null | wc -l)"
+        else
+            SNAP_N="$(sync_snapshot "$SRC_DIR")"
+        fi
+        if [ -n "$SNAP_N" ] && [ -f "$SNAP_MAIN" ]; then
+            info "免密快照已同步: $SNAP_DIR($SNAP_N 个文件, root 属主, /opt 扛升级)"
+        else
+            warn "快照同步失败 → 免密规则退回指向备份包(可被用户改写、挪位置会失配)"
+            SNAP_MAIN=""; SNAP_DEV=""
+        fi
+    fi
     mkdir -p "$SH_DIR"
     if [ -f "$SH_SRC" ]; then
         install -m 755 "$SH_SRC" "$SH_SCRIPT"
@@ -2380,39 +2836,91 @@ setup_selfheal() {
     fi
     chown "$REAL_USER:$REAL_GROUP" "$SH_SCRIPT" 2>/dev/null || true
 
-    # ── 1b. main.conf: 固化主脚本路径(自愈脚本部署目录里没有主脚本, 必须指路) ──
-    printf 'MAIN="%s"\n' "$MAIN_ABS" > "$SH_DIR/main.conf"
+    # ── 1b. main.conf: 固化"自动恢复用哪份主脚本" ──
+    #   优先快照(root 属主、扛升级、挪位置不失配); 快照没做成才退回备份包路径。
+    #   注意: 无人值守的恢复跑快照 = 跑"上次人工确认过的那套代码" —— 半改状态的
+    #   仓库不会被自动执行; 仓库更新后重跑本步刷新快照(doctor.sh 会比对哈希提醒)。
+    local RECOVER_MAIN
+    [ -f "$SNAP_MAIN" ] && RECOVER_MAIN="$SNAP_MAIN" || RECOVER_MAIN="$MAIN_ABS"
+    printf 'MAIN="%s"\n' "$RECOVER_MAIN" > "$SH_DIR/main.conf"
     chown "$REAL_USER:$REAL_GROUP" "$SH_DIR/main.conf" 2>/dev/null || true
 
     # ── 2. 写 user 服务单元 ──
     mkdir -p "$(dirname "$USER_UNIT")"
     cat > "$USER_UNIT" <<EOF
 [Unit]
-Description=SteamOS 升级后自愈(重建被原子更新冲掉的系统级配置)
-# user 服务在 /home, 能扛系统升级。开机后 30 秒再跑, 避开输入法/显卡尚未就绪的窗口。
+Description=SteamOS 升级后自愈(重建被原子更新冲掉的系统级配置与 /usr 开发文件)
+# user 服务在 /home, 能扛系统升级。桌面模式与**游戏模式**都会拉起(两者都会走到
+# user manager 的 default.target —— Valve 自己的 gamemoded/dmemcg-booster-user 同样如此)。
+# 网络就绪由脚本自己等(游戏模式下开机瞬间 Wi-Fi 常没连上), 见脚本里的 wait_online()。
 
 [Service]
 Type=oneshot
 ExecStart=/bin/bash $SH_SCRIPT
-# 用 sudo -n 调主脚本需要 root; 免密规则见 /etc/sudoers.d/steamos-self-heal
+# 用 sudo -n 调主脚本需要 root; 免密规则见 /etc/sudoers.d/zz-steamos-self-heal
+# 失败不会"试一次就等到下次开机": steamos-self-heal.timer 每 20 分钟重试, 直到补齐。
 
 [Install]
 WantedBy=default.target
 EOF
     chown "$REAL_USER:$REAL_GROUP" "$USER_UNIT" 2>/dev/null || true
 
-    # ── 3. sudoers 免密(放行自愈脚本 + 主脚本, 仅用于重建被升级冲掉的配置) ──
-    if [ -f "$SUDOERS" ] && grep -q "steamos-setup.sh" "$SUDOERS" 2>/dev/null; then
-        info "sudoers 免密已配置(含主脚本调用)"
+    # ── 2b. 重试定时器 ──
+    #  为什么必须要它: 服务是 oneshot, 一次失败就等下次开机。而游戏模式下(用户大多数时间
+    #  待在这里)开机瞬间 Wi-Fi 往往还没连上、pacman 相关动作必失败; 或者 sudoers 被升级
+    #  冲掉需要人插手 —— 有定时器才能自己重试到底, 不需要用户切回桌面模式。
+    #  用户 timer 不依赖图形会话; 服务"无事可做"时秒退, 20 分钟一次的开销可忽略。
+    cat > "$TIMER_UNIT" <<EOF
+[Unit]
+Description=定期重试 SteamOS 升级自愈(游戏模式/桌面模式都跑)
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=20min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+    chown "$REAL_USER:$REAL_GROUP" "$TIMER_UNIT" 2>/dev/null || true
+
+    # ── 3. sudoers 免密(只放行两个 **root 属主** 的快照脚本; 见函数头 ★ 段) ──
+    # 文件名用 zz- 前缀(sudoers last match wins, 见函数头部注释); 旧名清掉防残留
+    rm -f "$SUDOERS_LEGACY" 2>/dev/null || true
+    # 放行目标: 快照里的主脚本与开发文件补齐器; 快照没做成才退回备份包路径(并已在上面告警)。
+    # 不再放行自愈脚本本身 —— 它是用户身份跑的, 不需要 sudo(历史遗留, 且落在用户可写目录)。
+    local RULE_MAIN RULE_DEV RULE_DEPS
+    [ -n "$SNAP_MAIN" ] && RULE_MAIN="$SNAP_MAIN" || RULE_MAIN="$MAIN_ABS"
+    [ -n "$SNAP_DEV" ] && RULE_DEV="$SNAP_DEV" || RULE_DEV="$DEV_ABS"
+    # 第三条: 便携化应用的依赖补回器(升级后自动补 webkit 等)。
+    #   同样是"**root 属主快照** + 包名写死在脚本里" —— 提权面只是"重装那几个固定包",
+    #   不放行 pacman 本身(那等于免密装任意包)。见 fix-opt-deps.sh 头部的安全约束。
+    local SNAP_DEPS="$SNAP_DIR/fix-opt-deps.sh"
+    [ -f "$SNAP_DEPS" ] && RULE_DEPS="$SNAP_DEPS" || RULE_DEPS="$SRC_DIR/fix-opt-deps.sh"
+    # 判据要把开发文件那条也算上: 只查 steamos-setup.sh 会让"旧规则缺新条目"的机器
+    # 一直走 info 分支, 永远补不上那条规则(2026-09-25 加上 v3 开发文件自愈时踩到)。
+    # 2026-09-25 起还要查"规则是否指向快照": 老机器(规则指向备份包)必须被重写。
+    if [ -f "$SUDOERS" ] && grep -qF "$RULE_MAIN" "$SUDOERS" 2>/dev/null \
+       && grep -qF "$RULE_DEV" "$SUDOERS" 2>/dev/null \
+       && { [ ! -f "$RULE_DEPS" ] || grep -qF "$RULE_DEPS" "$SUDOERS" 2>/dev/null; } \
+       && ! grep -qF "$SH_SCRIPT" "$SUDOERS" 2>/dev/null; then
+        info "sudoers 免密已配置(指向 root 属主快照)"
     else
+        [ -f "$SUDOERS" ] && sub "规则需要更新(改成 root 属主快照 / 去掉多余的自愈脚本条目)"
         mkdir -p /etc/sudoers.d
         cat > "$SUDOERS" <<EOF
-# SteamOS 自愈服务: 免密执行自愈脚本与主脚本(仅用于重建被升级冲掉的配置)
-$REAL_USER ALL=(ALL) NOPASSWD: $SH_SCRIPT
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $MAIN_ABS
-$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $MAIN_ABS *
+# SteamOS 自愈服务: 免密执行 **/opt 下的 root 属主快照**(用户改不动 → 不留提权口子)
+# 与开发文件补齐器(仅用于重建被原子升级冲掉的配置与 /usr 开发文件)。
+# 第三条是便携化应用的依赖补回器(包名写死在同一份 root 属主脚本里, 不是放行 pacman)。
+# 文件名以 zz- 开头: sudoers 按"最后匹配者胜"判定, 排到最后以免被 %wheel 等宽规则盖掉
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $RULE_MAIN
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $RULE_MAIN *
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $RULE_DEV
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $RULE_DEV *
+$REAL_USER ALL=(ALL) NOPASSWD: /usr/bin/bash $RULE_DEPS
 EOF
         chmod 440 "$SUDOERS"
+        chown root:root "$SUDOERS" 2>/dev/null || true
         # 校验 sudoers 语法, 语法错会锁死 sudo, 必须拦住
         if visudo -cf "$SUDOERS" >/dev/null 2>&1; then
             info "sudoers 免密已写入并通过 visudo 校验"
@@ -2422,15 +2930,44 @@ EOF
         fi
     fi
 
-    # ── 4. 启用 user 服务(用目标用户身份, 不用 root) ──
+    # ── 4. 启用 user 服务: 直接建 wants 软链, 不依赖"以目标用户连上 user manager" ──
+    #   ⚠️ 别再用 `su - $REAL_USER -c "systemctl --user enable ..."`: 从 root 起的 su 会话
+    #      常常没有 XDG_RUNTIME_DIR/bus, 连不上该用户的 user manager; 再被 2>/dev/null
+    #      一吞就成了"看着执行了、其实没启用"。2026-09-25 实测首装完
+    #      ~/.config/systemd/user/default.target.wants/ 里只有 gamemoded.service,
+    #      自愈服务是 disabled —— "每次开机自动执行"从来没生效过(verify_step 加了这条判据)。
+    #      enable 的本质只是往 WantedBy 的目标目录放一个相对软链, 直接建链最可靠、也幂等。
     if command -v systemctl >/dev/null 2>&1; then
-        su - "$REAL_USER" -c "systemctl --user daemon-reload && systemctl --user enable --now steamos-self-heal.service" 2>/dev/null \
-            && info "user 服务已启用(开机自愈生效)" \
-            || warn "启用 user 服务失败(可能缺 linger, 桌面登录后仍会触发)"
-        # 无 linger 时用户不登录 user 服务不跑; 给个提示
-        if ! loginctl show-user "$REAL_USER" 2>/dev/null | grep -q "Linger=yes"; then
-            warn "建议开启 linger(无头也能跑): sudo loginctl enable-linger $REAL_USER"
+        local _uunit_dir _wants
+        _uunit_dir="$(dirname "$USER_UNIT")"
+        _wants="$_uunit_dir/default.target.wants"
+        mkdir -p "$_wants"
+        if ln -sfn "../$(basename "$USER_UNIT")" "$_wants/$(basename "$USER_UNIT")"; then
+            chown -R "$REAL_USER:$REAL_GROUP" "$_uunit_dir" 2>/dev/null || true
+            info "user 服务已启用(开机自愈生效)"
+        else
+            warn "启用 user 服务失败(自愈不会自动跑)"
         fi
+        # 定时器的启用目录是 timers.target.wants(不是 default.target.wants)
+        local _twants
+        _twants="$_uunit_dir/timers.target.wants"
+        mkdir -p "$_twants"
+        if ln -sfn "../$(basename "$TIMER_UNIT")" "$_twants/$(basename "$TIMER_UNIT")"; then
+            chown -R "$REAL_USER:$REAL_GROUP" "$_twants" 2>/dev/null || true
+            info "自愈重试定时器已启用(每 20 分钟一次, 无事可做时秒退)"
+        else
+            warn "启用重试定时器失败(失败后要等下次开机才重试)"
+        fi
+        # linger: 不登录也拉起 user manager —— 游戏模式(不启 KDE 桌面会话)尤其需要
+        if loginctl enable-linger "$REAL_USER" 2>/dev/null \
+           && loginctl show-user "$REAL_USER" 2>/dev/null | grep -q "Linger=yes"; then
+            info "linger 已开启(不依赖桌面登录)"
+        else
+            warn "开启 linger 失败; 手工: sudo loginctl enable-linger $REAL_USER"
+        fi
+        # user manager 活着时顺手 reload + 立刻跑一次(连不上也无妨, 下次开机由软链拉起)
+        su - "$REAL_USER" -c 'systemctl --user daemon-reload && systemctl --user start steamos-self-heal.service' >/dev/null 2>&1 \
+            && info "已立刻触发一次自愈清点(报告见 ~/.local/opt/steamos-self-heal/last-report.txt)" || true
     else
         warn "无 systemctl, 跳过 user 服务启用"
     fi
@@ -2462,7 +2999,7 @@ EOF
 #  下载走 gh 镜像优先(与 Decky 同套路)。
 # ===========================================================================
 setup_wiliwili() {
-    step "[13/15] wiliwili (B站客户端)"
+    step "[13/16] wiliwili (B站客户端)"
     prepare "$@"
 
     # flatpak 本体(SteamOS 自带; 其它 Arch 需补装)
@@ -2525,7 +3062,7 @@ setup_wiliwili() {
 #     的 CHECKS(fwport 项): 升级后由 step[12] 自愈服务自动重建, 不必手工补。
 # ===========================================================================
 setup_localsend() {
-    step "[14/15] LocalSend (局域网传文件)"
+    step "[14/16] LocalSend (局域网传文件)"
     prepare "$@"
 
     local LS="$REAL_HOME/.local/opt/localsend"
@@ -2550,7 +3087,7 @@ setup_localsend() {
     # ── 程序本体: 已就位且版本一致就跳过下载(重跑本步 = 更新) ──
     if [ "${FORCE:-0}" -ne 1 ] && [ -e "$APP/AppRun" ] && \
        [ "$(cat "$LS/.version" 2>/dev/null)" = "$VER" ]; then
-        info "LocalSend $VER 已就位, 跳过下载(FORCE=1 可强制重装)"
+        info "LocalSend $VER 已就位, 跳过下载(--force 可强制重装)"
     else
         mkdir -p "$CACHE"
         if [ -s "$ARCHIVE" ]; then
@@ -2677,9 +3214,12 @@ EOF
     info "桌面项就绪(应用列表搜 LocalSend; 命令行 $ENTRY)"
 
     # ── 防火墙: 能互相"发现"的关键(装好了搜不到对端就是这里没放行) ──
+    # 判据走 fw_53317_ok(): SteamOS 出厂 public zone 就开着 1024-65535/tcp+udp,
+    # 53317 本来就在范围内 —— 这时显式 add-port 会被判 ALREADY_ENABLED 而**不写盘**,
+    # 所以"配置里找不到字面 53317"≠"没放行"(2026-09-25 实测就是这么被误判的)。
     if command -v firewall-cmd >/dev/null 2>&1; then
-        if grep -rqs '53317' /etc/firewalld 2>/dev/null; then
-            info "防火墙已放行 53317(组播发现 + 传输)"
+        if fw_53317_ok; then
+            info "防火墙已放行 53317(含被出厂 1024-65535 范围覆盖的情况, 无需额外规则)"
         else
             sub "放行 53317/tcp + 53317/udp(firewalld)..."
             firewall-cmd --permanent --add-port=53317/tcp --add-port=53317/udp >/dev/null 2>&1 \
@@ -2709,7 +3249,7 @@ EOF
 #   就永久幸存 —— 与本项目"能放 /home 就放 /home"的铁律一致。
 #   顺带的好处: 它能在终端里把 markdown 渲染成带样式的样子, 还能当分页器用。
 setup_mdread() {
-    step "[15/15] markdown 阅读器 (glow)"
+    step "[15/16] markdown 阅读器 (glow)"
     local BIN="$REAL_HOME/.local/bin/glow"
     local DESK="$REAL_HOME/.local/share/applications/glow-markdown.desktop"
     local CACHE="$REAL_HOME/.cache/glow"
@@ -2726,7 +3266,7 @@ setup_mdread() {
     ARCHIVE="$CACHE/$BASE"
 
     if [ "${FORCE:-0}" -ne 1 ] && [ -x "$BIN" ] && [ -f "$DESK" ]; then
-        info "glow 已就位($("$BIN" --version 2>/dev/null | head -1)), 跳过(FORCE=1 可强制重装)"
+        info "glow 已就位($("$BIN" --version 2>/dev/null | head -1)), 跳过(--force 可强制重装)"
         return 0
     fi
 
@@ -2791,6 +3331,32 @@ setup_mdread() {
   双击 .md 文件也会用它打开(text/markdown 已注册)。
   原子升级后: 二进制与桌面项都在 /home, 无需重装。
 EOF
+}
+
+# ===========================================================================
+#  [16] Firefox Nightly (官方 tar.xz 解到 /home)
+# ---------------------------------------------------------------------------
+#  为什么必装: 日常网页浏览。官方 Linux 只发 tar.xz(无 deb), 解到用户可写目录后
+#  updater+update-settings.ini 齐全 → **能真正自更新**(装 /usr 时更新器被禁用);
+#  落 /home → 不占 rootfs、无沙箱、扛原子升级。
+#  复用 install-app-home.sh 的"单引擎"(下载/解包/入口/桌面项/图标只写一遍)。
+# ===========================================================================
+setup_firefox() {
+    step "[16/16] Firefox Nightly"
+    local FF_BIN="$REAL_HOME/.local/opt/firefox-nightly/firefox/firefox"
+    if [ "${FORCE:-0}" -ne 1 ] && [ -x "$FF_BIN" ]; then
+        info "Firefox Nightly 已就位, 跳过(--force 可强制重装)"
+        return 0
+    fi
+
+    local FF_INST
+    FF_INST="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/install-app-home.sh"
+    if [ ! -f "$FF_INST" ]; then
+        warn "找不到 install-app-home.sh, 跳过 Firefox Nightly"
+        return 1
+    fi
+    sub "调用 install-app-home.sh firefox-nightly (官方 tar.xz → /home, 约 100MB)..."
+    bash "$FF_INST" firefox-nightly
 }
 
 # ===========================================================================
@@ -2929,9 +3495,11 @@ show_status() {
     if [ -f "$REAL_HOME/.config/systemd/user/steamos-self-heal.service" ] && \
        [ -f "$REAL_HOME/.local/opt/steamos-self-heal/self-heal-after-upgrade.sh" ]; then
         info "自愈服务: 已部署(系统升级后开机自动重建被冲掉的配置)"
-        [ -f /etc/sudoers.d/steamos-self-heal ] \
-            && info "  自愈 sudo 免密: 已配" \
-            || warn "  自愈 sudo 免密: 缺失(系统升级冲掉了? 重跑: sudo bash $SCRIPT_NAME 12)"
+        [ -f /etc/sudoers.d/zz-steamos-self-heal ] \
+            && info "  自愈 sudo 免密: 已配(zz- 排最后, 免得被宽规则盖掉)" \
+            || { compgen -G '/etc/sudoers.d/*steamos-self-heal' >/dev/null \
+                    && warn "  自愈 sudo 免密: 还是旧文件名 —— sudoers 按最后匹配者胜, 会被宽规则盖掉! 重跑: sudo bash $SCRIPT_NAME 12" \
+                    || warn "  自愈 sudo 免密: 缺失(系统升级冲掉了? 重跑: sudo bash $SCRIPT_NAME 12)"; }
     else
         warn "自愈服务: 未部署(建议装: sudo bash $SCRIPT_NAME 12, 免得下次升级再手动恢复)"
     fi
@@ -2972,6 +3540,7 @@ map_step() {
         13|wiliwili|bili|bilibili) echo setup_wiliwili ;;
         14|localsend|ls|传文件|lanshare) echo setup_localsend ;;
        15|mdread|md|glow|markdown|markdown阅读器) echo setup_mdread ;;
+       16|firefox|ff|firefox-nightly|firefoxnightly) echo setup_firefox ;;
         *) echo "" ;;
     esac
 }
@@ -2985,7 +3554,7 @@ adopt_state() {
     echo "  判据: 各步骤的落地复核(文件/包/systemd unit 是否真实存在)"
     echo
     local fn adopted=0 pending=0
-    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread; do
+    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread setup_firefox; do
         if verify_step "$fn"; then
             state_mark "$fn"
             info "[认领] $(step_label "$fn") —— 已达标"
@@ -3004,6 +3573,32 @@ adopt_state() {
 # 原始参数快照: prepare() 里 exec sudo 重跑脚本时要原样带上(见 prepare 内注释)
 ORIG_ARGS=("$@")
 
+# ── 过期快照自检(2026-09-27 新增) ──────────────────────────────────────────
+#   现场教训: 2026-09-26 用户两次跑了 /opt/steamos-backup 里的**旧快照**, 症状是
+#   "刚修好的 bug 又原样复现" —— 因为没人告诉他"你跑的不是最新那份"。排查成本极高。
+#   做法: 步骤[12] 同步时盖 .snapmeta(来源路径 + 主脚本 sha256 + 时间); 之后凡
+#   **从快照目录启动**本脚本, 就拿记录里的源文件比一次 sha, 不一致就先警告一句。
+#   只在"跑的是快照"时发声; 从仓库跑时静默(那时本来就是最新)。
+warn_stale_snapshot() {
+    local here src sha now_sha
+    here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    [ "$here" = "$SNAP_DIR" ] || return 0
+    [ -f "$SNAP_DIR/.snapmeta" ] || return 0
+    src="$(sed -n 's/^SRC=//p' "$SNAP_DIR/.snapmeta" 2>/dev/null | head -1)"
+    sha="$(sed -n 's/^SHA=//p' "$SNAP_DIR/.snapmeta" 2>/dev/null | head -1)"
+    [ -n "$src" ] && [ -f "$src/steamos-setup.sh" ] || return 0
+    command -v sha256sum >/dev/null 2>&1 || return 0
+    now_sha="$(sha256sum "$src/steamos-setup.sh" 2>/dev/null | cut -d' ' -f1)"
+    [ -n "$now_sha" ] && [ "$now_sha" != "$sha" ] || return 0
+    warn "⚠️ 你跑的是**快照**那份, 它已落后于仓库(主脚本 sha256 对不上)"
+    sub "快照同步于: $(sed -n 's/^TIME=//p' "$SNAP_DIR/.snapmeta" 2>/dev/null | head -1)"
+    sub "仓库那份:   $src/steamos-setup.sh"
+    sub "要用最新代码就跑仓库那份(需输一次密码): sudo bash $src/steamos-setup.sh …"
+    sub "(刷过之后这条警告自己就消失; 免密跑的场景不受影响)"
+    return 0
+}
+warn_stale_snapshot
+
 FUNCS=()
 DO_RESET=0
 AFTER_UPGRADE=0
@@ -3015,6 +3610,15 @@ for arg in "$@"; do
         --adopt) state_init; adopt_state ;;
         --reset) DO_RESET=1 ;;
         --force|-f) FORCE=1 ;;
+        # 放行"仓库刷新失败也继续": 只做本地文件类步骤时用得上。
+        # 用开关而不是只留环境变量 —— 本项目自己记过: `VAR=1 sudo bash …` 会被 sudo 的
+        # env_reset 剥掉(README「快速开始」里同一条教训), 开关才是可靠写法。
+        --allow-stale-db) PKG_ALLOW_STALE=1 ;;
+        # 只重装/修复某些 Decky 插件时用(例: 被商店的 nightly 构建搞崩了, 重装回稳定版):
+        #   sudo bash steamos-setup.sh 5 --decky-plugins='SteamGridDB|ProtonDB Badges'
+        # ① 用 `=` 形式: 主循环是 `for arg in "$@"`, 循环里 shift 不改变迭代, 再取位置参数会取错;
+        # ② 用开关而不是环境变量: `DECKY_PLUGINS=x sudo …` 会被 sudo 的 env_reset 剥掉(README 同款教训)。
+        --decky-plugins=*) DECKY_PLUGINS="${arg#--decky-plugins=}"; export DECKY_PLUGINS ;;
         # 升级后一键恢复: 语义同"全量重跑", 靠落地复核只补被冲掉的那些
         --after-upgrade|restore) AFTER_UPGRADE=1 ;;
         -h|--help|help) show_help ;;
@@ -3030,7 +3634,7 @@ done
 #      多跑几个"其实没坏"的步骤只是多几次判空, 代价远小于漏恢复一项;
 #   ③ 以后新增步骤(如 [13])自动纳入恢复范围, 不用记得回来补两处。
 # AFTER_UPGRADE 只用于: 版本变化提示 + rootfs 空间预检。
-[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread)
+[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread setup_firefox)
 
 if [ "$DO_RESET" -eq 1 ]; then
     state_reset
@@ -3109,7 +3713,7 @@ for fn in "${FUNCS[@]}"; do
                 continue ;;
         esac
         if verify_step "$fn"; then
-            info "[跳过] $(step_label "$fn") —— 已完成于 $_sv  (FORCE=1 可强制重跑)"
+            info "[跳过] $(step_label "$fn") —— 已完成于 $_sv  (--force 可强制重跑)"
             continue
         fi
         # 记过完成但落地物没了 → 几乎必然是系统升级冲掉的, 自动重建
@@ -3130,6 +3734,8 @@ for fn in "${FUNCS[@]}"; do
     echo
 done
 echo
+# 收尾: 把 /home 里的 root 属主还给用户(否则用户自己重跑安装器会"权限不够")
+fix_home_owner
 step "全部完成"
 echo "  复查: bash $SCRIPT_NAME --status"
-echo "  分步: bash $SCRIPT_NAME 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15"
+echo "  分步: bash $SCRIPT_NAME 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16"

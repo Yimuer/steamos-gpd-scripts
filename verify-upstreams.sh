@@ -112,6 +112,15 @@ else
     skip "dsh 桌面版 AppImage" "拿不到版本, 跳过"
 fi
 
+# Clash Verge Rev: 上游**不发 AppImage**, Linux 只有 deb/rpm —— 本项目拆 deb 到 /home
+CV_TAG="$(gh_tag clash-verge-rev/clash-verge-rev)"; CV_VER="${CV_TAG#v}"
+if [ -n "$CV_VER" ]; then
+    probe_gh "Clash Verge Rev deb $CV_VER" \
+          "https://github.com/clash-verge-rev/clash-verge-rev/releases/download/$CV_TAG/Clash.Verge_${CV_VER}_amd64.deb"
+else
+    skip "Clash Verge Rev deb" "拿不到版本, 跳过"
+fi
+
 # WPS: 现行通道要带时间戳签名(k = md5(key+uri+t)), 老通道只对 ≤11.x 有效
 WPS_VER="${WPS_VER:-12.1.2.28080}"
 WPS_KEY="${WPS_SIGN_KEY:-7f8faaaa468174dc1c9cd62e5f218a5b}"

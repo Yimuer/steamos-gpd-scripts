@@ -8,7 +8,8 @@
 #    再由 InputPlumber 的 gpd4 映射翻译为 Steam Deck 控制器背键拨片。
 #
 #  动作:
-#    1. 安装守护进程 /usr/local/bin/gpd-win5-backkeys + systemd 服务
+#    1. 安装守护进程 ~/.local/opt/gpd-win5-backkeys/ + systemd 服务
+#       (落点在 /home: 扛原子升级; 旧版装 /usr/local/bin —— 那属于 /usr, 升级会被冲)
 #    2. 生成 /etc/inputplumber/devices.d/20-gpd_win5.yaml
 #       （基于系统自带 50-gpd_win5.yaml，追加虚拟键盘为源设备，数字小优先级高）
 #    3. 启动服务并重启 InputPlumber
@@ -27,7 +28,16 @@ set -euo pipefail
 # 回退到已安装位置。实际上本脚本现已不再需要外部 .py —— 见下方内嵌源码。
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 DAEMON_SRC="$SRC_DIR/gpd-win5-backkeys.py"
-DAEMON_DST="/usr/local/bin/gpd-win5-backkeys"
+# 守护进程落点在 /home, 与主脚本 step[4] 保持一致 —— 原子升级只冲 /etc 的 unit, 二进制幸存。
+# ⚠️ 别放 /usr/local/bin: /usr/local 属于 /usr, **升级会被冲**(2026-09-25 实测纠正,
+#    它不在 Valve 的 offload 清单里; 以前这里也写错了)。
+# ⚠️ 本脚本以 sudo 跑, $HOME 会变成 /root → 必须按 SUDO_USER 解析真实用户的家目录。
+REAL_USER="${SUDO_USER:-$(id -un)}"
+REAL_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6)"
+[ -n "$REAL_HOME" ] || REAL_HOME="/home/$REAL_USER"
+DAEMON_DIR="$REAL_HOME/.local/opt/gpd-win5-backkeys"
+DAEMON_DST="$DAEMON_DIR/gpd-win5-backkeys"
+DAEMON_DST_LEGACY="/usr/local/bin/gpd-win5-backkeys"   # 旧落点(rootfs), 安装/卸载时顺手清掉
 UNIT_PATH="/etc/systemd/system/gpd-win5-backkeys.service"
 IP_CFG="/etc/inputplumber/devices.d/20-gpd_win5.yaml"
 UDEV_RULE="/etc/udev/rules.d/70-gpd-backkeys.rules"
@@ -94,7 +104,7 @@ if [ "$DO_UNINSTALL" -eq 1 ]; then
 	step "卸载"
 	systemctl stop "$SERVICE" 2>/dev/null || true
 	systemctl disable "$SERVICE" 2>/dev/null || true
-	rm -f "$UNIT_PATH" "$DAEMON_DST" "$IP_CFG" "$UDEV_RULE"
+	rm -f "$UNIT_PATH" "$DAEMON_DST" "$DAEMON_DST_LEGACY" "$IP_CFG" "$UDEV_RULE"
 	udevadm control --reload 2>/dev/null || true
 	systemctl daemon-reload
 	systemctl restart inputplumber 2>/dev/null || true
@@ -231,7 +241,13 @@ udevadm control --reload 2>/dev/null || true
 info "udev 规则就绪: $UDEV_RULE"
 
 step "安装守护进程"
+mkdir -p "$DAEMON_DIR"
 install -m 755 "$DAEMON_SRC" "$DAEMON_DST"
+chown -R "$REAL_USER:$REAL_USER" "$DAEMON_DIR" 2>/dev/null || true
+# 旧版本的 /usr/local 落点顺手清掉(否则留一个升级即失效的僵尸二进制)
+if [ -e "$DAEMON_DST_LEGACY" ]; then
+	rm -f "$DAEMON_DST_LEGACY" && info "已清理旧落点 $DAEMON_DST_LEGACY(它在 rootfs, 升级会被冲)"
+fi
 cat >"$UNIT_PATH" <<EOF
 [Unit]
 Description=GPD Win 5 back buttons (L4/R4) to uinput translator
@@ -345,7 +361,7 @@ ${C_OK}==================== 安装完成 ====================${C_R}
     查看状态     bash $0 --status
     原始监听     sudo bash $0 --monitor
     守护进程日志 journalctl -u $SERVICE -f
-    发现新字节   GPD_BACKKEYS_DEBUG=1 sudo /usr/local/bin/gpd-win5-backkeys
+    发现新字节   GPD_BACKKEYS_DEBUG=1 sudo ~/.local/opt/gpd-win5-backkeys/gpd-win5-backkeys
 
   卸载:
     sudo bash $0 --uninstall

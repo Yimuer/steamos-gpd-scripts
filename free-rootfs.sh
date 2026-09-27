@@ -223,9 +223,11 @@ if [ "$AGGRESSIVE" -eq 1 ]; then
     head_ "⑥ 精简 locale(只保留 zh_CN / en / C)"
     before_loc="$(du -sm /usr/share/locale 2>/dev/null | cut -f1)"
     # 只删一级子目录, 保留 zh_CN* en* C* 和 locale.alias
+    # ⚠ 别用 2>/dev/null 把删除失败吞掉: 个别被占用的 locale 文件删不掉必须让用户看见,
+    #    否则会误以为清理成功(2026-09-25 审查发现的风险)
     find /usr/share/locale -mindepth 1 -maxdepth 1 \
         ! -name 'zh_CN*' ! -name 'en*' ! -name 'C*' ! -name 'locale.alias' \
-        -exec rm -rf {} + 2>/dev/null
+        -exec rm -rf {} + || warn "部分 locale 删除失败(个别被占用的文件, 可忽略)"
     after_loc="$(du -sm /usr/share/locale 2>/dev/null | cut -f1)"
     info "locale: ${before_loc} MB → ${after_loc} MB"
     warn "提示: 若某些程序界面变英文, 把对应 locale 装回来即可(不影响功能)"
@@ -234,7 +236,9 @@ if [ "$AGGRESSIVE" -eq 1 ]; then
     if [ -d /usr/share/wallpapers ]; then
         pacman -Qo /usr/share/wallpapers >/dev/null 2>&1 \
             && warn "/usr/share/wallpapers 被 pacman 包拥有, 改用 pacman 卸载更安全, 跳过" \
-            || { rm -rf /usr/share/wallpapers/* 2>/dev/null && info "已清空壁纸(86M)"; }
+            || { find /usr/share/wallpapers -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
+                 && info "已清空壁纸(86M)" \
+                 || warn "清空壁纸失败(可能有 pacman 包占用的文件, 建议用 pacman 卸载)"; }
     fi
     echo "  现在可用: $(free_mb) MB"
 fi

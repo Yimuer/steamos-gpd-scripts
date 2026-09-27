@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SteamOS 工具箱（统一入口）
+Name[en]=SteamOS Toolbox
+Comment=一个入口就够了：体检 / 重装 / 升级恢复 / 应用便携化 / 故障修复 / 诊断 / 打包
+# %k = 本 .desktop 文件的路径 → 用它定位同目录的 steamos.sh, 备份包放哪都能用。
+# 与 `重装后先运行我.desktop` 同款约束, 两条都别改回去:
+#   · 不写 TryExec=konsole —— 那样在没装 konsole 的机器上**整个入口会消失**
+#     (TryExec 找不到就被隐藏, 双击也没用)。命令本身是 shell 脚本, 不该拿终端卡它。
+#   · 用 Terminal=true 而不是在 Exec 里硬写 konsole —— 让桌面环境自己挑默认终端。
+# 图标刻意用 utilities-terminal(任何图标主题都有), 不新增图标依赖。
+# ⚠️ 从 Windows / 网盘 / U 盘 拷回来会丢执行位, 双击会没反应 → 先 chmod +x *.sh *.desktop
+Exec=/bin/bash -c 'd="$(dirname "%k")"; cd "$d" 2>/dev/null || cd "$HOME/Downloads/steamos-reinstall-backup" || exit 1; exec bash ./steamos.sh'
+Terminal=true
+Icon=utilities-terminal
+Categories=System;Utility;

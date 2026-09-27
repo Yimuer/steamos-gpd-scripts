@@ -12,6 +12,34 @@
      (从 Windows/网盘/U盘 拷回来的文件会丢执行位, 表现就是"双击没反应"; 先 chmod 一次)
 ★★★ 或双击【重装后先运行我】(一键重建环境, 断点续传, 中断可重来)            ★★★
 
+======================================================================
+【统一入口: steamos.sh】 (不知道跑哪个脚本时, 先跑它)
+======================================================================
+  用法:  cd 到本目录 && bash steamos.sh        (或双击 steamos.desktop)
+
+  它把本包 40+ 条能力收进一个菜单, 按用途分组:
+     体检与状态 / 重装与升级恢复 / 应用安装与便携化 / 故障修复 / 诊断取证 / 维护与发布
+
+  每项都标了性质, 一眼能看出"敢不敢点":
+     只读 = 不改任何东西(体检、诊断、自检) —— 随便跑
+     sudo = 会提权、要输密码(装东西、改系统)
+     交互 = 需要你在终端前(会问确认、或者可能改盘)
+
+  不想开菜单也行, 每条都能直接敲:
+     bash steamos.sh list            列出全部命令
+     bash steamos.sh doctor          体检(等价于 doctor.sh)
+     bash steamos.sh setup 3         只跑第 3 步(参数原样转给主脚本)
+     bash steamos.sh selfcheck       自检: 注册表↔文件一致 / 跑的是哪一份 / 快照新旧
+     bash steamos.sh help            完整用法
+
+  两个"发布用"的命令:
+     bash steamos.sh pack            打发布包 dist/steamos-toolbox-<版本>.tar.gz
+     bash steamos.sh dist-verify     把包解到临时目录实跑一遍, 验证它真的自包含
+
+  设计上的一条保证: 它自己**不提权**、也不会被写进 sudoers —— 需要 root 的仍由
+  各脚本自己 sudo。所以它不会成为新的提权口子(改脚本时请保持这一点, check.sh 有断言)。
+  另外: 在管道/定时任务里(没有终端)它**不会挂住等密码**, 只会把该跑的命令打印出来。
+
 【本备份包用途】
 重装 SteamOS(或 Arch 系)后, 在无 AI 辅助的环境下重建开发环境。
 所有脚本已自包含, 不依赖旧机器任何文件, 解压到 Downloads 即可运行。
@@ -26,7 +54,7 @@ Steam 游戏启动工具、dsh 安装逻辑等全部内容(完全自包含)。
   1) 先看状态:    bash steamos-setup.sh --status
   2) 分步安装(推荐, 便于定位错误):
        bash steamos-setup.sh 1    # archlinuxcn 源
-       bash steamos-setup.sh 2    # IBus 原生输入法 + 中文引擎(打中文关键)
+       bash steamos-setup.sh 2    # 输入法: 【已禁用】不改动系统输入法(保留步号, 空跑)
        bash steamos-setup.sh 3    # WorkBuddy (AUR包, 装/opt+electron, 完了自动自持化到 /home)
        bash steamos-setup.sh 4    # GPD Win5 背键(自动检测机型, 非Win5跳过)
        bash steamos-setup.sh 5    # Decky Loader
@@ -40,19 +68,22 @@ Steam 游戏启动工具、dsh 安装逻辑等全部内容(完全自包含)。
        bash steamos-setup.sh 13   # wiliwili (B站客户端, flatpak 用户级)
          bash steamos-setup.sh 14   # LocalSend (局域网传文件; 附带放行防火墙 53317)
          bash steamos-setup.sh 15   # markdown 阅读器 glow (静态二进制落 /home; 顺带注册 .md 双击打开)
+         bash steamos-setup.sh 16   # Firefox Nightly (官方 tar.xz 解到 /home, 自带更新器扛原子升级)
   3) 或一次全量:  bash steamos-setup.sh
   4) 复查:        bash steamos-setup.sh --status
 
 断点续传(2026-09-08 起):
   - 中断后重跑同一条命令会跳过已完成步骤, 从断点继续。
-  - 进度记在 ~/.cache/steamos-setup/state; --reset 清进度; FORCE=1 强制重跑。
+  - 进度记在 ~/.cache/steamos-setup/state; --reset 清进度; --force 强制重跑(FORCE=1 写在 sudo 前面会被 env_reset 剥掉, 用参数形式)。
   - --adopt 只检测不安装(把本机已达标的步骤登记为完成)。
 
 系统大版本升级后恢复(2026-09-09 起, 重要):
   - SteamOS 用 A/B 原子更新, 大版本升级会整块替换 rootfs 镜像,
     /etc 与 /usr 下的修改(含 pacman 装的包)全部被覆盖。
-  - ⚠️ 但 /opt、/usr/local、/root、/srv 是 bind-mount 到 /home 分区
+  - ⚠️ 但 /opt、/root、/srv、/nix 是 bind-mount 到 /home 分区
     (/home/.steamos/offload/*) → 这些路径下的东西**同样幸存**, 别当成被冲。
+    (注意: /usr/local **不在**这个清单里! 它属于 /usr, 升级会被冲 —— 2026-09-25 实测纠正,
+     以前本文把它错列为幸存。自查: findmnt -no SOURCE --target <路径>, 与 `--target /` 不同才算 offload。)
     修复过的例子: WorkBuddy 主体(/opt)、Firefox Nightly 与它的入口(~/.local)。
   - 升级后跑这一条即可自动恢复:
         sudo bash steamos-setup.sh --after-upgrade      (等价 restore)
@@ -118,13 +149,22 @@ free-rootfs.sh
 ======================================================================
 【可选组件安装.sh】(必装主线之外的增强项, 带菜单)
 ======================================================================
-  用法: bash 可选组件安装.sh        (或在"重装后先运行我"里选 y 自动拉起)
-    当前条目:  微信 / Firefox Nightly / DeepSeek Harness 桌面版 / WPS Office
-                / 鸿蒙字体 HarmonyOS Sans / NextKde 桌面外壳
+  用法: bash 可选组件安装.sh        (或在"重装后先运行我"里选 y; 或用 steamos.sh 菜单的 apps)
+    当前条目:  微信 / Clash Verge Rev / 任意 deb 便携化 / DeepSeek Harness 桌面版
+                / WPS Office / 鸿蒙字体 HarmonyOS Sans / NextKde 桌面外壳
   - 微信: 官方原生版沙盒封装 wechat-universal-bwrap, 自动补中文字体。
-  - Firefox Nightly: 官方包解到 /home —— 不占 rootfs、无沙箱、扛原子升级,
-    且因目录可写, Nightly 自带更新器能真正自更新。装完可顺手回收系统 firefox
-      那 290M: bash install-app-home.sh firefox-nightly --remove-system
+  - Clash Verge Rev: 上游**只发 deb/rpm, 没有 AppImage**(直装 deb 会进 /usr → 升级被冲),
+    所以走"拆 deb → 整棵树搬进 ~/.local/opt/clash-verge"(保留包内 usr/ 结构)。
+    ⚠️ 它唯一会被升级冲掉的是 Tauri 的 WebView 库 webkit2gtk-4.1(在 /usr):
+       装的时候会一并装上; 升级后由自愈链自动补回(见 fix-opt-deps.sh),
+       入口也会自检缺库并打印装回命令 —— 不会"点了没反应"。
+  - 任意 deb 便携化 (install-deb-portable.sh): 上面那套套路的**通用版**。
+    给自己手里的任意 .deb(本地文件或 URL), 它会拆包、装进 ~/.local/opt/<名>,
+    入口/桌面项/图标全在 /home → 扛原子升级、一字节不占 rootfs。
+    有图形界面时用 kdialog 引导选文件与主程序; 另有 --check(升级后体检)/--remove(卸载)。
+  - Firefox Nightly: **已提为必装步骤[16]**, 不在本菜单里了。
+    (官方包解到 /home —— 不占 rootfs、扛原子升级, 且目录可写 → 自带更新器能真自更新;
+     想回收系统 firefox 那 290M: bash install-app-home.sh firefox-nightly --remove-system)
   - DeepSeek Harness 桌面版: 官方 AppImage 解到 /home(刻意不用 deb)。
     ⚠️ 它推荐的内核版本(包内 version-recommend.json, 当前 0.1.5-rc.3)高于本包
     step[7] 固定的 dsh 版本(0.1.2-rc.1), 而桌面版会优先用已装的 CLI 核心
@@ -143,6 +183,21 @@ free-rootfs.sh
        或 HARMONY_URL='https://...zip' bash install-harmony-sans-home.sh
     monospace(终端/代码字体)刻意不动 —— 鸿蒙是比例字体, 顶替会让等宽错乱。
   新增条目: 只需 ①install_xxx() ②注册表(MENU_ORDER/NAME/PKGS[/CHECK]) ③case 分支。
+
+======================================================================
+【一屏体检: doctor.sh】(平时想确认"一切还正常"就跑它)
+======================================================================
+bash doctor.sh
+  - 只读体检(不需要 root、不联网、秒级), 一次看完:
+      系统与空间 / 必装组件与系统配置 / 升级后自愈链(服务·定时器·落点) /
+      开发文件 / 免密链路(自动恢复能否无人值守) / 上游依赖(--net 才查)
+  - 最后一行给结论 + 该跑哪条命令; 退出码 0=全绿, 1=有待处理(可被脚本复用)。
+  - 加 --net: 额外跑一遍联网的上游依赖体检(约 30 秒)。
+  - 它只做检查: 不写任何文件、不调 sudo 执行任何命令(免密只做"查询")。
+
+bash steamos-setup.sh --status
+  - 老的"状态"入口(组件/机型/源配置), doctor.sh 已把它纳入第一节。
+      bash steamos-setup.sh --status
 
 ======================================================================
 【备用脚本】(steamos-setup.sh 已覆盖同样功能; 以下供单步/手动补救用)
@@ -247,6 +302,113 @@ install-ge-proton.sh
   - 单独安装 GE-Proton(游戏兼容层, 装 ~/.local/share/Steam/compatibilitytools.d)。
   - 对应 steamos-setup.sh 步骤6 的 GE-Proton 部分。
 
+fix-missing-dev-files.sh
+  - 补 SteamOS 镜像**裁掉的开发文件**(头文件 / cmake 配置 / pkgconfig)。
+  - 什么时候用: 任何"要编译"的步骤报下面这类错时 ——
+      CMake: Could not find a package configuration file provided by "Qt6"
+      C    : fatal error: string.h / zlib.h: 没有那个文件或目录
+    此时 pacman -Q 会说"已装", 但磁盘上那些文件真的不存在: Valve 的基础镜像把开发文件
+    摘掉了, pacman 数据库却留着完整清单(本机实测: /usr/include 缺 22619 个,
+    .cmake/.pc 缺 3986 个)。NextKde、AUR 构建都会撞上, 原子升级后必然复发。
+  - 做法: 默认只从 pacman 缓存里的 .pkg.tar.zst 抽出**这三类开发文件**写回 /usr,
+    不碰运行时库、不把 locale/doc 带回来(省 ~90% 体积), 版本不一致直接拒绝(防部分升级)。
+  - 用法: bash fix-missing-dev-files.sh                    # 只读体检(缺哪些包)
+          sudo bash fix-missing-dev-files.sh --apply       # 修(kde/qt6 集合, 实测 ~160 包)
+          sudo bash fix-missing-dev-files.sh --apply --set all        # 全系统扫修(更慢)
+          sudo bash fix-missing-dev-files.sh --apply --pkgs kio,kwin  # 只补指定的包
+          bash fix-missing-dev-files.sh --apply --dry-run  # 预演(不需要 root)
+  - 细节与坑见 SCRIPT-MAINTENANCE.md §12。
+  - 原子升级后会被自动处理: 升级后开机时自愈服务会检测并自动补(见下一条),
+    所以通常你不需要手动跑它 —— 只有在自愈没跑成(免密失效)时才手工补。
+
+diag-sudo-selfheal.sh
+  - 复查「升级后自动恢复」为什么需要密码(自愈免密链路体检)。**只读, 需 root**。
+  - 免密链路长什么样(2026-09-25 起): 步骤[12] 会把整套工具以 root 身份同步到
+    **/opt/steamos-backup/**(/opt 是 offload → 扛原子升级; root 属主 → 用户改不动),
+    免密规则只放行那份快照里的 steamos-setup.sh 与 fix-missing-dev-files.sh。
+    好处: ① 不留"用户可写脚本 + 免密 = 提权口子" ② 备份包挪位置也不会失配。
+    ⚠️ 仓库改了要重跑一次步骤[12] 刷新快照; `bash doctor.sh` 会比对哈希并提醒。
+  - 一次性查清: /etc/sudoers 到底 include 了 sudoers.d 没有(含被注释掉的情况)、
+    sudoers.d 里哪些文件会被 sudo 忽略(组/他人可写)、快照在不在/属主对不对/与仓库是否同版、
+    规则是否真指向快照。
+  - 用法: sudo bash diag-sudo-selfheal.sh
+  - 结论里会给出修法: 通常是 `sudo bash steamos-setup.sh 12`(按当前路径/快照重写规则)。
+  - 背景与"为什么不能拿 sudo -n -l <命令> 判"见 SCRIPT-MAINTENANCE.md §11.9 与 §13.5。
+
+diag-decky.sh
+  - Decky 插件体检 / 修复。**只读**, 不需要 root(修复动作才要)。
+  - 什么时候用: 游戏模式里 Decky 面板变成一屏报错(典型 Minified React error #130),
+    或插件看着装了但不显示。
+  - 一次性看清: Decky 版本 + **更新通道**(Pre-Release/Testing 开着就会装到 nightly 构建)、
+    每个插件的版本(带 -哈希 后缀 = 测试构建)、包是否完整(缺 dist/index.js)、
+    日志里有没有"反复 unload"(插件崩了会被不停地卸载, 报错屏就是这么来的)。
+  - 修法: bash diag-decky.sh --repair             # 用商店稳定版重装预置插件(需 root)
+          bash diag-decky.sh --repair SteamGridDB # 只重装某一个
+          bash diag-decky.sh --channels-stable    # 把 Decky 的 branch/store 从 Pre-Release 改回稳定
+  - 重装后要**完全退出 Steam**再开(不是关窗口), 插件才会重新注入。
+  - 经验: 插件崩绝大多数是"测试通道的 nightly 构建 + Steam 客户端更新"组合, 不是插件本身坏了。
+
+【升级后自愈在游戏模式下的行为】(步骤[12] 部署, v4)
+  - **会自动跑**: 桌面模式与游戏模式都会拉起 user manager 的 default.target, 自愈服务挂在那里;
+    再加 loginctl enable-linger(不登录图形会话也有 user manager), 双保险。
+  - **失败会自己重试**: 另有 steamos-self-heal.timer(开机 45 秒后一次, 之后每 20 分钟一次)。
+    无事可做时服务 0.5 秒秒退, 所以在游戏里挂着也没开销。
+  - **Wi-Fi 还没连上也不怕**: 动手前先等网络(nm-online 优先, 兜底探上游镜像, 最多 120 秒),
+    等不到就静默交给定时器, 不算失败。
+  - **游戏模式下看不到通知**: 游戏模式没有通知守护(只有 plasmashell 提供通知服务),
+    所以失败会写一个看得见的文件 ~/.local/opt/steamos-self-heal/NEEDS-ATTENTION.txt
+    (里面就是那两条要粘的命令), 切回桌面模式时还会补一次真通知。
+  - 想立刻手动跑一次: su - deck -c "systemctl --user start steamos-self-heal.service"
+    看日志: journalctl --user -u steamos-self-heal.service   报告: ~/.local/opt/steamos-self-heal/last-report.txt
+
+【AUR / pacman 装包失败的几个常见"假象"】 (2026-09-26 现场整理; 多数不是包坏了)
+  0) "错误：未能同步所有数据库（无法锁定数据库）"
+     —— 这是**锁**, 不是源坏了! 有另一个 pacman 在跑(常见: 自动恢复链正在补开发文件,
+        或你自己另开了一个终端在装东西)。
+     怎么确认: pgrep -x pacman -a        → 看有没有活着的 pacman
+     怎么办: 等它跑完即可。脚本现在会**自动等 180 秒**(PACMAN_LOCK_WAIT=秒数 可调),
+             等到了就继续; 等不到会告诉你持有者是谁。
+             **不要**急着删 db.lck —— 那会让两个 pacman 同时改库, 比等更危险。
+  1) "文件系统中已存在 /opt/xxx/..." + "发生错误，没有软件包被更新。"
+     —— 这是**孤儿文件**, 不是包损坏、也不是网络。
+     为什么: workbuddy 装 /opt/WorkBuddy、微信装 /opt/wechat-universal, 而 /opt 是 offload
+     (实际在 /home 分区)。原子升级整块换 rootfs 时, /opt 里的文件**幸存**、/usr 里的
+     入口/运行时**和 pacman 的安装台账一起被冲掉** → 变成"文件在、台账没了"。
+     再装同一个包, pacman 看到文件已存在就拒绝覆盖, 于是报这句。
+     怎么确认(一条): pacman -Qo /opt/WorkBuddy/app.asar.unpacked/resources/trayTemplate.png
+                     → 回"没有软件包拥有 ..." 就是它。
+     怎么办: 脚本已自动兜底(判定为孤儿后带 --overwrite 重试一次, 并在日志里说明)。
+             手工等价: yay -S --overwrite='*' workbuddy   (或 paru 同理)
+             **别**养成所有 pacman 都加 --overwrite 的习惯 —— 那样会盖掉真实的包间冲突。
+  2) "error sending request for url (https://aur.archlinux.org/rpc): unexpected EOF"
+     —— 这是 **AUR 站点本身连不上**(DNS 污染/代理规则没覆盖/被墙), 跟本脚本无关。
+     git 能拉、网页能开 ≠ aur.archlinux.org 能连, 它是独立域名。
+     换个网络/DNS 或补代理规则再来; 排查: curl -v https://aur.archlinux.org/rpc
+  3) "fatal error: zlib.h/string.h：没有那个文件或目录" (AUR 编译到一半挂)
+     —— SteamOS 镜像裁掉了 /usr/include 的开发文件(pacman 却显示"已装")。
+     先跑: bash fix-missing-dev-files.sh   (体检; sudo ... --apply 补齐)
+
+【升级后自愈为什么没动静? 先查免密】(2026-09-26 现场; 这条最容易被忽略)
+  - 现象: journalctl --user -u steamos-self-heal.service 里刷
+      "deck : a password is required ; COMMAND=/usr/bin/bash /opt/steamos-backup/steamos-setup.sh 3"
+      "[自愈] 步骤 3 未执行(需免密 sudo, 见 steamos-setup.sh 12)"
+  - 原因: 我们的免密规则在 /etc/sudoers.d/zz-steamos-self-heal, 而 **/etc 属于 rootfs,
+          原子升级会连它一起冲掉**。规则一没, 自愈链就动不了。
+  - **更要紧的是这里有个死循环**: 恢复免密这件事本身要跑步骤[12], 而步骤[12] 要 root
+    → 免密没了就永远自举不起来, 自愈服务每 20 分钟失败一次, 一直循环。
+  - 所以升级后**第一个要跑的是步骤[12]**(唯一必须人工输密码的一步)。
+    **优先用仓库里那份**(不是 /opt/steamos-backup 那份): 反正要输密码、无风险,
+    且仓库版的步骤[12] 会顺手把过期快照刷新成最新; 免密还活着时才用快照那份(免密跑):
+        sudo bash <仓库路径>/steamos-setup.sh 12
+        sudo bash /opt/steamos-backup/steamos-setup.sh --after-upgrade
+  - ⚠️ **警惕这一行**: "[跳过] 12 升级后自愈服务 —— 已完成于 <日期>"
+    它看起来很正常, 但当规则不全/快照过期时, 跳过就等于**什么都没修**。
+    (2026-09-27 真机踩到: 新增第三条免密规则后, 落地判据没跟着改 → 永远跳过。
+     已修, 并加了自动断言防止再犯。) 想显式强制重跑加 --force:
+        sudo bash <仓库路径>/steamos-setup.sh 12 --force
+    (步骤[12] 不装包、不刷仓库 —— 补齐器正持锁下载时也能跑, 不会被"无法锁定数据库"挡住)
+  - 一条命令看清"是规则丢了还是快照丢了": sudo bash /opt/steamos-backup/diag-sudo-selfheal.sh
+
 fix-endfield-qt.sh
   - 修复《明日方舟:终末地》进游戏后报 "no Qt platform plugin could be initialized"。
   - 根因: 游戏目录自带 Qt5 DLL 却缺 Qt 平台插件 qwindows.dll(全盘搜不到),
@@ -317,7 +479,9 @@ fix-inputplumber-cycle.sh
 
 2. Decky 预置插件:
    - 第[5]步装完 Decky 后自动安装 SteamGridDB + ProtonDB Badges(商店分发)。
-   - DECKY_PLUGINS="A B" 可自定义; DECKY_PLUGINS="" 置空跳过。
+   - DECKY_PLUGINS="A|B C" 可自定义(**用 | 分隔**: 商店名自带空格, 如 "ProtonDB Badges");
+     DECKY_PLUGINS="" 置空跳过。商店名大小写敏感, 可在 https://plugins.deckbrew.xyz 查。
+     例: DECKY_PLUGINS='Decky Localsend|ProtonDB Badges' sudo bash steamos-setup.sh 5
    - AutoDarkMode 已从商店下架(Steam 客户端已内置昼夜主题), 不再提供。
 
 3. 目录布局:

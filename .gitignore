@@ -17,3 +17,15 @@ tools/shellcheck.exe
 # ---- 系统杂项 ----
 .DS_Store
 Thumbs.db
+
+# ---- 发布包(steamos.sh pack 的产物) ----
+# 628K 的 tar + 校验和: 属于"构建产物", 不进版本库; 要发布就现打一个。
+dist/
+
+# ---- 自愈脚本的运行时状态 ----
+# 正常部署时它们落在 ~/.local/opt/steamos-self-heal/; 但若有人直接从仓库目录
+# 跑过 self-heal-after-upgrade.sh(或早期版本的 doctor.sh), 会在仓库根留下这几坨。
+# 它们是运行时产物, 不该进仓库。
+last-osversion
+last-report.txt
+NEEDS-ATTENTION.txt
