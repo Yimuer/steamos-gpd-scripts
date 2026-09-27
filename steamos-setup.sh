@@ -334,7 +334,7 @@ device_profile
 show_help() {
     awk 'NR==1 {next} { if ($0 !~ /^#/) exit; sub(/^#+ ?/, ""); print }' "$0"
     echo
-      echo "步骤: 1/cn=archlinuxcn  2/im=输入法(已禁用)  3/wb=WorkBuddy  4/backkey=GPD背键  5/decky(Decky+预置插件)  6/games=游戏  7/dsh=DeepSeek Harness  8/clean=rootfs瘦身  9/tdp=TDP控制(SimpleDeckyTDP)  10/ntp=换境内NTP(加速开机)  11/gpu=GPU加速建议(DLSS/FSR)  12/selfheal=升级后自愈服务  13/wiliwili=B站客户端  14/localsend=局域网传文件  15/mdread=markdown阅读器(glow)"
+      echo "步骤: $(help_step_line)"
     echo "设备画像: --device 只检测本机机型(免root): AMD掌机/AMD台式/Intel掌机/Intel+N卡台式"
     echo "断点续传: 直接重跑即可(已完好的步骤自动跳过, 被系统升级冲掉的会自动重建)"
     echo "         --reset 清进度; --force 强制重跑(用参数, 别用 FORCE=1 sudo 前缀 —— 会被 env_reset 剥掉)"
@@ -389,27 +389,111 @@ state_mark() {
     chown "$REAL_USER:$REAL_GROUP" "$STATE_FILE" 2>/dev/null
 }
 state_reset() { rm -f "$STATE_FILE"; info "已清除进度记录: $STATE_FILE"; }
-step_label() {
-    case "$1" in
-        setup_cn)       echo "1 archlinuxcn 源" ;;
-        setup_im)       echo "2 输入法(已禁用)" ;;
-        setup_wb)       echo "3 WorkBuddy" ;;
-        setup_backkey)  echo "4 GPD Win5 背键" ;;
-        setup_decky)    echo "5 Decky Loader" ;;
-        setup_games)    echo "6 GE-Proton/游戏" ;;
-        setup_dsh)      echo "7 dsh" ;;
-        clean_rootfs)   echo "8 rootfs 瘦身" ;;
-        setup_tdp)      echo "9 TDP 控制(SimpleDeckyTDP)" ;;
-        setup_ntp)      echo "10 换境内 NTP(加速开机)" ;;
-        setup_gpu)      echo "11 GPU 加速建议(DLSS/FSR)" ;;
-        setup_selfheal) echo "12 升级后自愈服务" ;;
-        setup_wiliwili) echo "13 wiliwili(B站客户端)" ;;
-        setup_localsend) echo "14 LocalSend(局域网传文件)" ;;
-        setup_mdread)   echo "15 markdown 阅读器(glow)" ;;
-        setup_firefox)  echo "16 Firefox Nightly" ;;
-        *)              echo "$1" ;;
-    esac
+
+# ===========================================================================
+#  STEPS —— 必装主线的**唯一事实来源**(2026-09-27 表驱动改造, 路线图 #3)
+#  格式: 编号|函数名|标题|别名(空格分隔)|进全量|有判据
+#    · 编号   = 展示顺序, 也是 `sudo bash steamos-setup.sh <编号>` 的参数
+#    · 标题   = 进度/跳过/--status 里的一行名(`step_label` 的输出)
+#    · 别名   = 除编号外还能用什么词点到这一步(map_step)
+#    · 进全量 = y 表示"不带参数跑全量"时执行。步骤[8] 是 **n**:
+#               rootfs 瘦身只在步骤[3] 空间不够时按需触发, 从来不在顺序列表里
+#               (历史上有人把它当成漏项"补进"全量 → 无人值守时擅自瘦身系统分区)。
+#    · 有判据 = y 表示 verify_step() 里**必须**有该函数的分支; n = 无落地物的
+#               空步骤(已禁用的[2] / 纯提示的[11] / 按需的[8]), 分支写成 return 0。
+#  ⚠️ 加/删一步**只改这张表**: 编号、标题、别名、全量顺序、认领列表、帮助清单、
+#     横幅里的 [n/N] 全部由它派生 —— 过去加一步要改 9 处, 漏一处就出现
+#     "帮助里没有这一步""全量跳过这一步"这类不报错的漂移(2026-09-27 实测:
+#     show_help 的步骤清单就停在 15, 步骤 16 从没进过帮助文本)。
+#     check.sh 有断言逼着"表 ↔ verify_step ↔ 函数体"三处一致。
+# ===========================================================================
+# ----8<---- STEPS-TABLE-BEGIN ----
+#   ↑↓ 这一对标记之间的块是**自足**的(只依赖 info/err/step 三个输出助手),
+#   check.sh 会把它整块抽出来 + 打桩, 然后**真的调用** map_step / step_label /
+#   steps_where 对答案。为什么这么费事: 光 grep "表里有没有 16|firefox" 只能证明
+#   字在, 证明不了派生出来的行为对(2026-09-27 就遇到过 grep 判据被同分支里的
+#   文件存在性检查骗过去的事)。改这块时**别把标记删掉**, 否则派生测试会瞎。
+STEPS=(
+  "1|setup_cn|archlinuxcn 源|cn source|y|y"
+  "2|setup_im|输入法(已禁用)|im ibus input pinyin rime|y|n"
+  "3|setup_wb|WorkBuddy|wb workbuddy|y|y"
+  "4|setup_backkey|GPD Win5 背键|backkey gpd|y|y"
+  "5|setup_decky|Decky Loader|decky|y|y"
+  "6|setup_games|GE-Proton/游戏|games game proton 鸣潮 终末地|y|y"
+  "7|setup_dsh|dsh|dsh harness deepseek|y|y"
+  "8|clean_rootfs|rootfs 瘦身|clean rootfs slim|n|n"
+  "9|setup_tdp|TDP 控制(SimpleDeckyTDP)|tdp tdpctl power|y|y"
+  "10|setup_ntp|换境内 NTP(加速开机)|ntp ntpcn time timesync|y|y"
+  "11|setup_gpu|GPU 加速建议(DLSS/FSR)|gpu dlss fsr upscale 显卡|y|n"
+  "12|setup_selfheal|升级后自愈服务|selfheal heal 自愈|y|y"
+  "13|setup_wiliwili|wiliwili(B站客户端)|wiliwili bili bilibili|y|y"
+  "14|setup_localsend|LocalSend(局域网传文件)|localsend ls 传文件 lanshare|y|y"
+  "15|setup_mdread|markdown 阅读器(glow)|mdread md glow markdown markdown阅读器|y|y"
+  "16|setup_firefox|Firefox Nightly|firefox ff firefox-nightly firefoxnightly|y|y"
+)
+STEP_TOTAL="${#STEPS[@]}"
+
+# 取表里某一列(纯 bash, 不起子进程)
+_step_field() {
+    local -a _p
+    IFS='|' read -r -a _p <<< "$1"
+    printf '%s' "${_p[$(( "$2" - 1 ))]}"
 }
+# 函数名 → 表里那一行
+_step_row() {
+    local _r
+    for _r in "${STEPS[@]}"; do
+        [ "$(_step_field "$_r" 2)" = "$1" ] && { printf '%s\n' "$_r"; return 0; }
+    done
+    return 1
+}
+# 函数名 → 编号(表里没有 = 编程错误, 大声报出来而不是默默打出 [/?16])
+step_no() {
+    local _r
+    _r="$(_step_row "$1")" || { err "STEPS 表里没有步骤函数 $1 —— 编号打不出来"; return 2; }
+    _step_field "$_r" 1
+}
+# 按某一列的值筛步骤(第 5 列 y = 全量顺序列表; 也是 --adopt 的认领列表)
+steps_where() {
+    local _r
+    for _r in "${STEPS[@]}"; do
+        [ "$(_step_field "$_r" "$1")" = "$2" ] && printf '%s\n' "$(_step_field "$_r" 2)"
+    done
+    return 0
+}
+# 步骤横幅: 编号与总数都由表派生(历史上出现过 /7 /9 /12 /14 并存, 别再手写)
+banner() { step "[$(step_no "$1")/$STEP_TOTAL] $2"; }
+# --help 里那一行"步骤清单"(过去是手抄的, 结果 2026-09-27 实测发现它停在 15 ——
+# 步骤[16] Firefox 从来没见过光。派生之后加一步自动出现在这里。)
+help_step_line() {
+    local _r _out="" _alias
+    for _r in "${STEPS[@]}"; do
+        _alias="$(_step_field "$_r" 4)"; _alias="${_alias%% *}"
+        _out+="${_out:+  }$(_step_field "$_r" 1)/${_alias}=$(_step_field "$_r" 3)"
+    done
+    printf '%s\n' "$_out"
+}
+# 函数名 → "编号 标题"。表里没有就原样回显 —— **必须**: 进度文件里可能留着
+# 老版本的键(比如已禁用的步骤), --status 不能因为一个陌生键就崩。
+step_label() {
+    local _r
+    _r="$(_step_row "$1")" || { printf '%s\n' "$1"; return 0; }
+    printf '%s %s\n' "$(_step_field "$_r" 1)" "$(_step_field "$_r" 3)"
+}
+# map_step: 编号或别名 → 步骤函数名; 不认识就**输出空**(调用方按"未知参数"忽略)。
+# 用逐词字符串比较而不是 case 通配, 是为了让 `bash steamos-setup.sh '*'` 这种
+# 参数老老实实落空, 而不是被通配符匹配到某一步(case 的模式是右侧展开的)。
+map_step() {
+    local _r _a
+    for _r in "${STEPS[@]}"; do
+        [ "$(_step_field "$_r" 1)" = "$1" ] && { _step_field "$_r" 2; return 0; }
+        for _a in $(_step_field "$_r" 4); do
+            [ "$_a" = "$1" ] && { _step_field "$_r" 2; return 0; }
+        done
+    done
+    return 0
+}
+# ----8<---- STEPS-TABLE-END ----
 
 # LocalSend 的 53317 是否"没被防火墙挡住"。
 # ⚠️ 判据不能用 `grep -r 53317 /etc/firewalld`: SteamOS 出厂的 public zone 就开了
@@ -904,7 +988,7 @@ PYEOF
 #  [1] archlinuxcn 源
 # ===========================================================================
 setup_cn() {
-    step "[1/16] archlinuxcn 软件源"
+    banner setup_cn "archlinuxcn 软件源"
     prepare "$@"
     # 确保官方源存在(archlinuxcn 依赖它)
     if [ "$HAS_CORE" -eq 0 ] || [ "$HAS_EXTRA" -eq 0 ]; then
@@ -957,7 +1041,7 @@ setup_cn() {
 #  全量运行 / 断点续传 / 落地复核 / --adopt 均正常工作。
 # ===========================================================================
 setup_im() {
-    step "[2/16] 输入法 —— 已禁用"
+    banner setup_im "输入法 —— 已禁用"
     info "按 2026-09-24 要求跳过: 不改动系统输入法相关内容"
     return 0
 }
@@ -984,7 +1068,7 @@ rootfs_report() {
 }
 
 clean_rootfs() {
-    step "[8/16] rootfs 瘦身"
+    banner clean_rootfs "rootfs 瘦身"
     if [ "$(id -u)" -ne 0 ]; then
         warn "需要管理员权限(密码在终端输入), 重新以 sudo 运行..."
         exec sudo -E bash "$0" clean
@@ -1036,7 +1120,7 @@ clean_rootfs() {
 #     仅是让 Electron 走原生 Wayland 的无害加固(非必需), 与 setup_im 配合使用。
 # ===========================================================================
 setup_wb() {
-    step "[3/16] WorkBuddy (AUR 包, 最可靠能打中文)"
+    banner setup_wb "WorkBuddy (AUR 包, 最可靠能打中文)"
     prepare "$@"
 
     # ── rootfs 空间预检 ──
@@ -1375,7 +1459,7 @@ EOF
 #  (守护进程 py 放 /home, /etc 只留 systemd unit + udev + inputplumber 配置)
 # ===========================================================================
 setup_backkey() {
-    step "[4/16] GPD Win5 背键 + InputPlumber(deck 手柄 / 背键 / Home / KB)"
+    banner setup_backkey "GPD Win5 背键 + InputPlumber(deck 手柄 / 背键 / Home / KB)"
     prepare "$@"
 
     # ── 设备检测: 换机型重装时自动跳过本步 ──
@@ -1734,7 +1818,7 @@ EOF
 #  [5] Decky Loader  (二进制在 /home/homebrew, /etc 只留小 unit)
 # ===========================================================================
 setup_decky() {
-    step "[5/16] Decky Loader"
+    banner setup_decky "Decky Loader"
     prepare "$@"
 
     local SERVICE_NAME="plugin_loader"
@@ -1968,7 +2052,7 @@ install_decky_plugin() {
 #  设备检测: 仅 AMD/Intel APU; 有 NVIDIA 独显则跳过(插件明确不支持)。
 # ===========================================================================
 setup_tdp() {
-    step "[9/16] TDP 控制 (SimpleDeckyTDP 插件)"
+    banner setup_tdp "TDP 控制 (SimpleDeckyTDP 插件)"
     prepare "$@"
 
     local PLUGIN_DIR="$REAL_HOME/homebrew/plugins"
@@ -2153,7 +2237,7 @@ EOF
 #    再用下方写好的 python 写入启动选项。本体文件请用户自行备份放回。
 # ===========================================================================
 setup_games() {
-    step "[6/16] 游戏支持(GE-Proton + 鸣潮/终末地)"
+    banner setup_games "游戏支持(GE-Proton + 鸣潮/终末地)"
     prepare "$@"
 
     local REPO="GloriousEggroll/proton-ge-custom"
@@ -2426,7 +2510,7 @@ EOF
 #  用法: dsh web(浏览器 Web UI, 127.0.0.1:3080) / dsh run "任务"
 # ===========================================================================
 setup_dsh() {
-    step "[7/16] DeepSeek Harness (dsh, 补充 AI CLI)"
+    banner setup_dsh "DeepSeek Harness (dsh, 补充 AI CLI)"
     prepare "$@"
 
     # 固定到已实测可用的版本(dev-preview 会破坏兼容, 不追 latest)
@@ -2557,7 +2641,7 @@ EOF
 #  副作用: 无。只改时间同步服务器, 不动 atomupd 本身。
 # ===========================================================================
 setup_ntp() {
-    step "[10/16] 换境内 NTP(加速开机)"
+    banner setup_ntp "换境内 NTP(加速开机)"
     prepare "$@"
 
     # 可配置 NTP 服务器(空格分隔), 默认阿里 + 腾讯
@@ -2620,7 +2704,7 @@ EOF
 #      老 Intel 核显/独显可能回退软件模式。Linux 支持: kernel 6.18+/Mesa 25.3+。
 # ===========================================================================
 setup_gpu() {
-    step "[11/16] GPU 加速建议(DLSS/FSR)"
+    banner setup_gpu "GPU 加速建议(DLSS/FSR)"
     prepare "$@"
 
     detect_hw   # 刷新检测
@@ -2748,7 +2832,7 @@ EOF
 #  每次升级后重跑一次本步。这已是最优解(无法把 sudoers 放 /home, systemd 不认)。
 # ===========================================================================
 setup_selfheal() {
-    step "[12/16] 系统升级后自愈服务"
+    banner setup_selfheal "系统升级后自愈服务"
     # 本步不装包(重建免密规则/快照/服务软链, 全是文件操作) → 不需要刷新仓库。
     # 这一步是"解锁其他一切"的钥匙, 绝不能反过来被 pacman 锁挡住
     # (2026-09-26 实测: 补齐器持锁时, 步骤[12] 死在环境准备的 pacman -Sy 上,
@@ -2999,7 +3083,7 @@ EOF
 #  下载走 gh 镜像优先(与 Decky 同套路)。
 # ===========================================================================
 setup_wiliwili() {
-    step "[13/16] wiliwili (B站客户端)"
+    banner setup_wiliwili "wiliwili (B站客户端)"
     prepare "$@"
 
     # flatpak 本体(SteamOS 自带; 其它 Arch 需补装)
@@ -3062,7 +3146,7 @@ setup_wiliwili() {
 #     的 CHECKS(fwport 项): 升级后由 step[12] 自愈服务自动重建, 不必手工补。
 # ===========================================================================
 setup_localsend() {
-    step "[14/16] LocalSend (局域网传文件)"
+    banner setup_localsend "LocalSend (局域网传文件)"
     prepare "$@"
 
     local LS="$REAL_HOME/.local/opt/localsend"
@@ -3249,7 +3333,7 @@ EOF
 #   就永久幸存 —— 与本项目"能放 /home 就放 /home"的铁律一致。
 #   顺带的好处: 它能在终端里把 markdown 渲染成带样式的样子, 还能当分页器用。
 setup_mdread() {
-    step "[15/16] markdown 阅读器 (glow)"
+    banner setup_mdread "markdown 阅读器 (glow)"
     local BIN="$REAL_HOME/.local/bin/glow"
     local DESK="$REAL_HOME/.local/share/applications/glow-markdown.desktop"
     local CACHE="$REAL_HOME/.cache/glow"
@@ -3342,7 +3426,7 @@ EOF
 #  复用 install-app-home.sh 的"单引擎"(下载/解包/入口/桌面项/图标只写一遍)。
 # ===========================================================================
 setup_firefox() {
-    step "[16/16] Firefox Nightly"
+    banner setup_firefox "Firefox Nightly"
     local FF_BIN="$REAL_HOME/.local/opt/firefox-nightly/firefox/firefox"
     if [ "${FORCE:-0}" -ne 1 ] && [ -x "$FF_BIN" ]; then
         info "Firefox Nightly 已就位, 跳过(--force 可强制重装)"
@@ -3523,27 +3607,7 @@ show_status() {
 # ===========================================================================
 #  参数解析
 # ===========================================================================
-map_step() {
-    case "$1" in
-        1|cn|source) echo setup_cn ;;
-        2|im|ibus|input|pinyin|rime) echo setup_im ;;
-        3|wb|workbuddy) echo setup_wb ;;
-        4|backkey|gpd) echo setup_backkey ;;
-        5|decky) echo setup_decky ;;
-        6|games|game|proton|鸣潮|终末地) echo setup_games ;;
-        7|dsh|harness|deepseek) echo setup_dsh ;;
-        8|clean|rootfs|slim)   echo clean_rootfs ;;
-        9|tdp|tdpctl|power)    echo setup_tdp ;;
-        10|ntp|ntpcn|time|timesync) echo setup_ntp ;;
-        11|gpu|dlss|fsr|upscale|显卡) echo setup_gpu ;;
-        12|selfheal|heal|自愈) echo setup_selfheal ;;
-        13|wiliwili|bili|bilibili) echo setup_wiliwili ;;
-        14|localsend|ls|传文件|lanshare) echo setup_localsend ;;
-       15|mdread|md|glow|markdown|markdown阅读器) echo setup_mdread ;;
-       16|firefox|ff|firefox-nightly|firefoxnightly) echo setup_firefox ;;
-        *) echo "" ;;
-    esac
-}
+# (map_step 已并入上面的 STEPS 表块 —— 它是纯派生的, 跟表放一起才看得出"只改表"这件事)
 
 # ---------- 认领当前已达标的步骤(只检测登记, 不安装) ----------
 # 用途: 本机已经是"目标状态"(比如手工配好的机器)时, 用它把已达标的步骤登记为完成,
@@ -3554,7 +3618,9 @@ adopt_state() {
     echo "  判据: 各步骤的落地复核(文件/包/systemd unit 是否真实存在)"
     echo
     local fn adopted=0 pending=0
-    for fn in setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread setup_firefox; do
+    local -a _adopt=()
+    mapfile -t _adopt < <(steps_where 5 y)     # 与"跑全量"同一份列表(表派生, 不再手抄)
+    for fn in "${_adopt[@]}"; do
         if verify_step "$fn"; then
             state_mark "$fn"
             info "[认领] $(step_label "$fn") —— 已达标"
@@ -3634,7 +3700,12 @@ done
 #      多跑几个"其实没坏"的步骤只是多几次判空, 代价远小于漏恢复一项;
 #   ③ 以后新增步骤(如 [13])自动纳入恢复范围, 不用记得回来补两处。
 # AFTER_UPGRADE 只用于: 版本变化提示 + rootfs 空间预检。
-[ ${#FUNCS[@]} -eq 0 ] && FUNCS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend setup_mdread setup_firefox)
+if [ ${#FUNCS[@]} -eq 0 ]; then
+    mapfile -t FUNCS < <(steps_where 5 y)      # 全量顺序 = 表里「进全量=y」的行, 按表序
+    # 空表 = STEPS 被人删空或改坏。这时"跑全量"会静默什么都不做 —— 比报错更糟,
+    # 所以宁可当场退出。(与 check.sh 里"行数对账带下限"是同一条思路)
+    [ ${#FUNCS[@]} -gt 0 ] || { err "STEPS 表里没有任何「进全量=y」的步骤 —— 表被改坏了, 拒绝跑空"; exit 2; }
+fi
 
 if [ "$DO_RESET" -eq 1 ]; then
     state_reset

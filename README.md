@@ -43,8 +43,17 @@ SteamOS 大版本升级会整块替换 rootfs。踩过之后才知道，被冲�
 
 ## 二、快速开始
 
-**一个入口就够**：不知道跑哪个脚本时，先跑它。菜单按「体检 / 重装 / 应用 / 修复 / 诊断 / 维护」分组，
-每项都标了它的性质（`只读` / `sudo` / `交互`）。
+**交付物是一个文件**：`steamos-toolbox-<版本>.run`（由 `bash steamos.sh pack` 打出）。
+拷到任何 Linux（含 SteamOS）机器上，`bash` 它一下就位——不需要先 `chmod`，不需要手工解压：
+
+```bash
+bash steamos-toolbox-3.11.0.run        # 校验载荷 → 解到 ~/steamos-toolbox → 打开菜单
+bash steamos-toolbox-3.11.0.run --list # 只想看看包里有什么
+bash steamos-toolbox-3.11.0.run --check # 只校验完整性（网盘截断会在这里暴露）
+```
+
+开发/取最新代码用 git clone，入口同样是那一个（菜单按「体检 / 重装 / 应用 / 修复 / 诊断 / 维护」分组，
+每项都标了性质 `只读` / `sudo` / `交互`）：
 
 ```bash
 git clone https://github.com/Yimuer/steamos-gpd-scripts.git
@@ -65,11 +74,9 @@ sudo bash steamos-setup.sh      # 或一次全量跑完 16 步
 sudo bash steamos-setup.sh --after-upgrade   # 大版本升级后：只重建被冲掉的
 ```
 
-> **从网盘 / Windows 拷回来的包**（不是 git clone）要先修执行位，否则双击没反应、
-> 脚本也可能跑不起来：
-> ```bash
-> chmod +x *.sh *.desktop
-> ```
+> 拿到的若是**整个目录**（git clone，或手工解开 tar.gz），从 Windows / 网盘 / U 盘拷回来会丢执行位，
+> 要先 `chmod +x *.sh *.desktop`，否则双击没反应。**用 `.run` 就不用管这条** —— 执行位写在包内的
+> tar 元数据里，安装器解出来会自己补齐（这是 `.run` 存在的主要理由）。
 
 **断点续传**：中断后重跑同一条命令会跳过已完成步骤。进度记在
 `~/.cache/steamos-setup/state`；`--reset` 清进度，`--force` 强制重跑（别用 `FORCE=1 sudo …` 前缀，环境变量会被 sudo 的 env_reset 剥掉）。

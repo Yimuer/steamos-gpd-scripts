@@ -15,19 +15,186 @@ FAIL=0
 pass() { echo "  [✓] $1"; }
 bad()  { echo "  [✗] $1"; FAIL=1; }
 
+# 扫脚本时的统一排除集 —— 判据是"这是不是交付物", 不是"文件在不在"。
+#   archive/ disabled/    : 有意保留的历史存档(语法不过也没关系, 它本来就不该跑)
+#   .cache/ .workbuddy/ todo/ dist/ tools/ : 运行时/会话/构建产物与第三方二进制
+# 2026-09-27 实测教训: 本轮的审计脚本落在 .cache/ 里, 被下面的扫描扫出一条与本仓库
+# 代码无关的 shellcheck 红项 —— 排除集漏一项, 门禁就会因为"工具"而不是"产品"变红。
+# ⚠️ steamos-nix/ **不在**这个集合里: 第 1 节(语法)照旧扫它 —— 冻结不等于可以损坏,
+#    少扫 24 个文件就是少 24 份保障(写这条时差点把它一并排掉, 靠 [✓] 计数从 231
+#    掉到 203 才发现)。只有第 3 节 shellcheck 豁免它(冻结分支不追新 lint 结论)。
+skip_dir() {
+    case "$1" in
+        ./archive/*|./disabled/*|./.cache/*|./.workbuddy/*|\
+        ./todo/*|./dist/*|./tools/*|*/nix/store/*) return 0 ;;
+    esac
+    return 1
+}
+
 echo "════════ 1) bash -n 语法检查 ════════"
+_n_scanned=0
 while IFS= read -r f; do
-    case "$f" in ./archive/*|./disabled/*|*/nix/store/*) continue ;; esac
+    skip_dir "$f" && continue
+    _n_scanned=$((_n_scanned + 1))
     if err="$(bash -n "$f" 2>&1)"; then
         pass "$f"
     else
         bad "$f 语法错误"; echo "$err" | sed 's/^/        /'
     fi
-done < <(find . -type f -name "*.sh" -not -path "./archive/*" -not -path "./disabled/*" -not -path "./.git/*")
+done < <(find . -type f -name "*.sh" -not -path "./.git/*")
+# 覆盖面本身要有下限: 排除集写错(比如把整个 steamos-nix 一并排掉)会让"全绿"变成
+# "扫得越来越少", 而计数变化没人会去对。与 steamos.sh 注册表"原始行数对账"同一思路。
+if [ "$_n_scanned" -lt 40 ]; then
+    bad "语法检查只扫了 $_n_scanned 个 .sh(下限 40) —— skip_dir 排除集是不是写宽了?"
+else
+    pass "语法检查覆盖面 $_n_scanned 个 .sh(≥40)"
+fi
 
 echo "════════ 2) 关键不变量断言 ════════"
 S=steamos-setup.sh
 [ -f "$S" ] && pass "$S 存在" || { bad "$S 缺失"; }
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2.0 STEPS 表(必装主线的唯一事实来源) —— 2026-09-27 表驱动改造的守门人
+#
+#     这一节**不 grep 文案**, 而是把表块整块抽出来、打上桩、真的调用派生出来的
+#     map_step / step_label / steps_where, 拿答案对。
+#     为什么非要执行: 表驱动的典型故障不是"某个字写错了", 而是"派生出来的行为不对"
+#     —— 顺序错一项、别名撞车、某一步悄悄不再进全量列表。这些 grep 全都看不出来,
+#     而后果都是"跑全量时静默少装一步"(§13.10.6 那一类)。
+#
+#     答案表(下面 EXPECT_*)是**独立手抄**的第二份, 故意跟 STEPS 表重复:
+#     步骤编号一旦被挪动, 用户手里的 `steamos-setup.sh 12` 语义就变了,
+#     这种改动必须逼着"两处一起改"才允许发生。加新步骤时确实要改这里 ——
+#     但只需在答案表末尾追加一项, 而原来加一步要在主脚本里改 9 处。
+# ─────────────────────────────────────────────────────────────────────────
+_h=""          # 派生测试的输出(抽取失败时也要能被后面的交叉核对安全引用)
+_tbl="$(sed -n '/# ----8<---- STEPS-TABLE-BEGIN ----/,/# ----8<---- STEPS-TABLE-END ----/p' "$S" 2>/dev/null)"
+if ! printf '%s' "$_tbl" | grep -q '^STEPS=('; then
+    bad "抽不到 STEPS 表块(标记被改/删? 或表被挪出标记) —— 本节的派生断言全瞎, 先修抽取"
+elif ! printf '%s' "$_tbl" | grep -q '^map_step() {'; then
+    bad "STEPS 标记块里没有 map_step(被挪出去了?) —— 参数直达失去覆盖, 把它挪回标记块内"
+else
+    _h="$(
+        {
+            cat <<'HSTUB'
+set -uo pipefail
+info(){ :; }
+warn(){ :; }
+step(){ :; }
+err(){ printf 'ERR %s\n' "$*" >&2; }
+HSTUB
+            printf '%s\n' "$_tbl"
+            cat <<'HTEST'
+# ── 独立答案表 ──────────────────────────────────────────────────────────
+EXPECT_NUMS=(1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+EXPECT_FNS=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games \
+setup_dsh clean_rootfs setup_tdp setup_ntp setup_gpu setup_selfheal \
+setup_wiliwili setup_localsend setup_mdread setup_firefox)
+# 不带参数跑全量时的执行顺序(步骤[8] rootfs 瘦身**不在**此列 —— 它由步骤[3] 按需触发)
+EXPECT_FULL=(setup_cn setup_im setup_wb setup_backkey setup_decky setup_games \
+setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili \
+setup_localsend setup_mdread setup_firefox)
+EXPECT_NOVERIFY=(setup_im clean_rootfs setup_gpu)   # 无落地物, verify 分支恒 return 0(按表序)
+NB=0
+ok()  { printf 'OK %s\n' "$1"; }
+no()  { printf 'BAD %s | 期望[%s] 实得[%s]\n' "$1" "$2" "$3"; NB=$((NB+1)); }
+ck()  { [ "$2" = "$3" ] && ok "$1" || no "$1" "$3" "$2"; }
+
+ck "表行数 = ${#EXPECT_NUMS[@]}(与答案表一致)" "${#STEPS[@]}" "${#EXPECT_NUMS[@]}"
+ck "步骤总数派生 STEP_TOTAL = 表行数" "$STEP_TOTAL" "${#STEPS[@]}"
+
+# 编号必须连续且与答案表逐项一致(编号被挪动 = 用户手上的命令语义变了)
+_i=0
+for _r in "${STEPS[@]}"; do
+    _i=$((_i+1))
+    ck "第 $_i 行的编号 = ${EXPECT_NUMS[$_i-1]}" \
+       "$(_step_field "$_r" 1)" "${EXPECT_NUMS[$_i-1]}"
+    ck "第 $_i 行的函数 = ${EXPECT_FNS[$_i-1]}" \
+       "$(_step_field "$_r" 2)" "${EXPECT_FNS[$_i-1]}"
+done
+
+# map_step: 编号 / 每个别名都要能直达; 不认识的一律回空(不能瞎匹配)
+for _r in "${STEPS[@]}"; do
+    _n="$(_step_field "$_r" 1)"; _f="$(_step_field "$_r" 2)"
+    ck "编号 $_n 直达 $_f" "$(map_step "$_n")" "$_f"
+    ck "step_no($_f) = $_n" "$(step_no "$_f")" "$_n"
+    ck "标题非空($_f)" "$(_step_field "$_r" 3 | grep -c .)" "1"
+    case "$(_step_field "$_r" 5)" in y|n) ok "进全量标记合法($_f)";;
+                                 *) no "进全量标记非法($_f)" "y 或 n" "$(_step_field "$_r" 5)";; esac
+    case "$(_step_field "$_r" 6)" in y|n) ok "有判据标记合法($_f)";;
+                                 *) no "有判据标记非法($_f)" "y 或 n" "$(_step_field "$_r" 6)";; esac
+    # 别名里混进 glob 或首尾/连续空格, 会让"逐词比较"退化成"按文件名展开", 后果是误命中
+    _al="$(_step_field "$_r" 4)"
+    if printf '%s' "$_al" | grep -qE '(^ +| +$|  +)'; then
+        no "别名格式($_f)" "单个空格分隔、无首尾空格" "$_al"
+    else
+        case "$_al" in
+            *'*'*|*'?'*|*'['*) no "别名含 glob 字符($_f)" "不含 * ? [" "$_al" ;;
+                            *) ok "别名格式干净($_f)" ;;
+        esac
+    fi
+    for _a in $(_step_field "$_r" 4); do
+        ck "别名 $_a 直达 $_f" "$(map_step "$_a")" "$_f"
+    done
+done
+ck "未知参数回空(不会误当某一步)" "$(map_step nosuchkey)" ""
+ck "通配符参数回空(case 会误吃, 逐词比较不会)" "$(map_step '*')" ""
+ck "空参数回空" "$(map_step '')" ""
+
+# 全量顺序列表 —— 这条是"跑全量静默少装一步"的直接防线
+ck "steps_where 5 y = 全量顺序(15 项)" "$(steps_where 5 y | tr '\n' ' ')" "${EXPECT_FULL[*]} "
+ck "不进全量的只有 rootfs 瘦身(别顺手把系统瘦身塞进无人值守)" \
+   "$(steps_where 5 n | tr '\n' ' ')" "clean_rootfs "
+ck "无落地判据的步骤恰为 3 项(禁用[2]/提示[11]/按需[8])" \
+   "$(steps_where 6 n | tr '\n' ' ')" "${EXPECT_NOVERIFY[*]} "
+
+# step_label: 派生格式必须是"编号 标题"; 陌生键回显原值(--status 不能因老进度键崩)
+ck "step_label(setup_selfheal) = '12 升级后自愈服务'" \
+   "$(step_label setup_selfheal)" "12 升级后自愈服务"
+ck "step_label 对陌生键回显原值(不让 --status 崩)" "$(step_label setup_gone_v9)" "setup_gone_v9"
+
+# --help 的步骤清单(2026-09-27 实测它曾停在 15, 步骤[16] 从没进过帮助)
+_hl="$(help_step_line)"
+ck "help 清单条目数 = 表行数" "$(printf '%s' "$_hl" | grep -o '[0-9]\+/[a-z-]*=' | wc -l | tr -d ' ')" "$STEP_TOTAL"
+case "$_hl" in *"16/firefox=Firefox Nightly"*) ok "help 清单含最后一步(16/firefox)" ;;
+             *) no "help 清单缺最后一步" "含 16/firefox=…" "$_hl" ;; esac
+# 交给 check.sh 后面的静态交叉核对复用(用同一份解析结果, 不再写第二个表解析器)
+_xf=""; for _r in "${STEPS[@]}"; do _xf="$_xf$(_step_field "$_r" 2) "; done
+printf 'XOUT TOTAL=%s\n' "$STEP_TOTAL"
+printf 'XOUT FNS=%s\n' "$_xf"
+printf 'XOUT FULL=%s\n' "$(steps_where 5 y | tr '\n' ' ')"
+printf 'DONE bad=%d\n' "$NB"
+HTEST
+        } | bash 2>&1
+    )"
+    _n_ok="$(printf '%s\n' "$_h" | grep -c '^OK ')"
+    _n_bad="$(printf '%s\n' "$_h" | grep -c '^BAD ')"
+    _n_err="$(printf '%s\n' "$_h" | grep -c '^ERR ')"
+    if [ "$_n_ok" -lt 40 ]; then
+        # 断言自己哑了必须报错(§13.10.4 反例②的教训): 表块被改坏时派生测试会
+        # 一条都跑不出来, 那时"0 条红"是假绿灯, 比没有断言更危险。
+        bad "派生测试只跑出 $_n_ok 条(下限 40) —— 表块或桩坏了, 本节已失效"
+        printf '%s\n' "$_h" | head -4 | sed 's/^/        /'
+    else
+        pass "STEPS 表派生行为可执行(实跑 ${_n_ok} 项断言)"
+    fi
+    while IFS= read -r _l; do
+        case "$_l" in
+            BAD\ *) bad "${_l#BAD }" ;;
+            ERR\ *) bad "派生代码报错: ${_l#ERR }" ;;
+        esac
+    done < <(printf '%s\n' "$_h")
+    case "$_h" in
+        *DONE*)
+            if [ "$_n_bad" -eq 0 ] && [ "$_n_err" -eq 0 ]; then
+                pass "派生行为全对(全量顺序 15 项 / 别名直达 / help 清单 16 项)"
+            else
+                bad "派生行为有 ${_n_bad} 红 ${_n_err} 错, 见上"
+            fi ;;
+        *) bad "派生测试没跑完(输出里没有 DONE 行 —— 中途挂了?)" ;;
+    esac
+fi
 
 # 2.1 输入法约束(2026-09-24): setup_im 必须保持空函数, 不得有任何改系统输入法的动作
 body="$(sed -n '/^setup_im() {/,/^}/p' "$S" 2>/dev/null)"
@@ -50,9 +217,8 @@ grep -q 'install_decky_plugin()' "$S" \
     && pass "install_decky_plugin 助手存在" \
     || bad  "install_decky_plugin 缺失"
 # 2.4 断点续传状态机关键节点
-for fn in setup_cn setup_wb setup_backkey setup_decky setup_games setup_dsh setup_tdp setup_ntp setup_gpu setup_selfheal setup_wiliwili setup_localsend; do
-    grep -q "^$fn() {" "$S" || { bad "步骤函数缺失: $fn"; }
-done
+#     ("每个步骤函数都在"这条 2026-09-27 起改由 STEPS 表派生, 见 2.0 与 2.15f ——
+#      这里原本手抄了 12 个函数名, 本身就是第三份副本, 而且已经漏了 [15][16]。)
 grep -q 'state_done\|state_mark\|verify_step' "$S" && pass "断点续传状态机完整" || bad "状态机关键函数缺失"
 # 2.5 外层 heredoc 禁用手法不得再现(事故根源)
 grep -q "^: <<'EOF'" "$S" && bad "检测到裸的 ': <<EOF' 块禁用手法(事故模式), 请改用逐行注释或移出存档" || pass "无危险 heredoc 块禁用手法"
@@ -130,9 +296,6 @@ fi
 grep -q '^setup_localsend() {' "$S" \
     && pass "步骤[14] setup_localsend 存在" \
     || bad "步骤[14] setup_localsend 缺失"
-grep -q '14|localsend' "$S" \
-    && pass "map_step 已认 localsend(可 sudo bash steamos-setup.sh 14)" \
-    || bad "map_step 未接 localsend —— 步骤号参数无法直达"
 grep -q 'fwport|14' self-heal-after-upgrade.sh \
     && pass "自愈的 fwport 项已挂到步骤[14](数值对得上)" \
     || bad "自愈的 fwport 项没挂到步骤[14] —— 检测到缺失也不会去重建它(自愈清单是按步骤号挂的)"
@@ -623,12 +786,9 @@ fi
 grep -q '^setup_mdread() {' "$S" \
     && pass "步骤[15] setup_mdread 存在" \
     || bad "步骤[15] setup_mdread 缺失"
-grep -q '15|mdread' "$S" \
-    && pass "map_step 已认 mdread(可 sudo bash steamos-setup.sh 15)" \
-    || bad "map_step 未接 mdread —— 步骤号参数无法直达"
-grep -q 'setup_localsend setup_mdread' "$S" \
-    && pass "FUNCS 已含步骤[15](两处列表都加了)" \
-    || bad "FUNCS 漏了 setup_mdread —— 跑全量时会跳过这一步"
+# (map_step / FUNCS 的点名断言已于 2026-09-27 并入 STEPS 表派生测试: 见 2.0 与 2.15f。
+#  旧断言靠 grep 字面量 '15|mdread' 与 'setup_localsend setup_mdread', 表驱动后那些
+#  字面量本就不存在了 —— 留着它们只会假红, 删掉才是对的。)
 grep -q 'BIN="\$REAL_HOME/.local/bin/glow"' "$S" \
     && pass "glow 装进 /home(不占 rootfs、扛原子升级)" \
     || bad "glow 落点被改 —— 那就不如直接用 Arch 包了, 但那个进 rootfs 会被升级冲掉"
@@ -724,38 +884,100 @@ fi
 grep -q '^setup_firefox() {' "$S" \
     && pass "步骤[16] setup_firefox 存在" \
     || bad "步骤[16] setup_firefox 缺失"
-grep -q '16|firefox' "$S" \
-    && pass "map_step 已认 firefox(可 sudo bash steamos-setup.sh 16)" \
-    || bad "map_step 未接 firefox —— 步骤号参数无法直达"
-grep -q 'setup_mdread setup_firefox' "$S" \
-    && pass "FUNCS 已含步骤[16](两处列表都加了)" \
-    || bad "FUNCS 漏了 setup_firefox —— 跑全量时会跳过这一步"
 grep -q 'firefox-nightly/firefox/firefox' "$S" \
     && pass "Firefox Nightly 装进 /home(不占 rootfs、扛原子升级)" \
     || bad "firefox 落点被改 —— 装 /usr 会进 rootfs 且更新器被禁"
 grep -q '"\$FF_INST" firefox-nightly' "$S" \
     && pass "步骤[16] 复用 install-app-home.sh 单引擎(不另写一套下载/解包)" \
     || bad "firefox 没走 install-app-home.sh —— 有第二套下载逻辑会漂移"
-# ── 新不变量: 步骤横幅里的"总数"必须等于最大步骤号 ──
-#    加步骤时最容易漏的就是这个(历史上出现过 /7 /9 /10 /11 /12 /14 并存)。
-#    注意分母不等于 FUNCS 的元素个数: 步骤8(rootfs 瘦身)是**步骤3 里按需触发的子步骤**
-#    (空间不够才自动跑, ROOTFS_NOCLEAN=1 可关), 不在全量顺序列表里 → 所以按"最大步骤号"比。
-max_step="$(grep -oE '^ +setup_[a-z_]+\) +echo "[0-9]+|^ +clean_rootfs\) +echo "[0-9]+' "$S" 2>/dev/null \
-            | grep -oE '[0-9]+' | sort -n | tail -1)"
-dens="$(grep -oE 'step "\[[0-9]+/[0-9]+\]' "$S" 2>/dev/null | grep -oE '/[0-9]+' | tr -d '/' | sort -u | tr '\n' ' ')"
-if [ -n "$max_step" ]; then
-    if [ "$(printf '%s' "$dens" | wc -w)" -eq 1 ] && [ "$(printf '%s' "$dens" | tr -d ' ')" = "$max_step" ]; then
-        pass "步骤横幅总数一致(全部 /$max_step)"
-    else
-        bad "步骤横幅总数不一致: 最大步骤号是 $max_step, 横幅里出现的是 [$(printf '%s' "$dens" | sed 's/ $//')]"
-    fi
+# ── 2.15f 步骤表的静态交叉核对(与 2.0 的派生测试配对) ──────────────────────
+#    2.0 证明「表派生出来的行为对」; 这一节证明「表点到的东西真的存在,
+#    而且文档里写死的步数没漂」。防的正是 §13.10.6 那一类事故: 一侧改了、
+#    另一侧没改, 两侧各自都"自洽", 只有放在一起比才现形。
+_x_total="$(printf '%s\n' "$_h" | sed -n 's/^XOUT TOTAL=//p')"
+_x_fns="$(printf '%s\n' "$_h" | sed -n 's/^XOUT FNS=//p')"
+if [ -z "$_x_total" ] || [ -z "$_x_fns" ]; then
+    bad "拿不到表清单(2.0 的派生测试没跑完) —— 本节已失效, 先修上面"
 else
-    # 旧写法到这里就"静默通过"了 —— 只要 map_step 的缩进/写法一变(比如换成 tab),
-    # 正则就数不出步骤号, 而这条断言会**假装检查过**(2026-09-25 审查发现)。
-    # 判据失效本身就该报错, 否则它比没有还危险。
-    bad "数不出最大步骤号 —— map_step 的写法变了(缩进/引号?), 本断言已失效, 请更新正则"
-fi
+    _nb=0
+    for _fn in $_x_fns; do
+        grep -q "^$_fn() {" "$S" || { bad "表里有 $_fn, 但主脚本里没有它的函数体"; _nb=$((_nb+1)); }
+    done
+    [ "$_nb" -eq 0 ] && pass "表点的 $_x_total 个步骤函数全部有函数体"
 
+    # 每个步骤都必须在 verify_step 里有分支 —— 无落地物的也要**显式**写 return 0,
+    # 不能靠 case 末尾的 `*) return 0` 兜底(那等于"没判据也算完成", 是假达标)。
+    _vb="$(sed -n '/^verify_step() {/,/^}/p' "$S" 2>/dev/null)"
+    if [ -z "$_vb" ]; then
+        bad "抽不到 verify_step 函数体 —— 判据覆盖率断言自己失效了(被改名/缩进变了?)"
+    else
+        _nv=0
+        for _fn in $_x_fns; do
+            printf '%s\n' "$_vb" | grep -Eq "^ +$_fn\)" \
+                || { bad "verify_step 里没有 $_fn 分支 —— 会掉到 *) return 0 = 假达标"; _nv=$((_nv+1)); }
+        done
+        [ "$_nv" -eq 0 ] && pass "verify_step 覆盖全部 $_x_total 步(无落地物的也显式写了 return 0)"
+    fi
+
+    # 横幅: 编号与总数由表派生, 不许再出现手写的 [N/M](历史上 /7 /9 /12 /14 并存过)
+    #  模式提到变量里: `"$(grep -E '...含双引号...' "$S")"` 这种嵌套引号会被 bash 的
+    #  双引号内命令替换预解析提前闭合(实测报 "looking for matching '", 2026-09-27)。
+    #  ⚠️ 模式**不能带结尾的 `\"`**: 真实横幅是 `step "[11/16] GPU 加速建议(...)"`,
+    #     `]` 后面是文字不是引号。带上它就永远匹配不到 —— 2026-09-27 反例探针
+    #     (把 banner 改回手写横幅)当场验出这条假绿灯, 别改回去。
+    _bann_pat='step "\[[0-9]+/[0-9]+\]'
+    _lit="$(grep -cE "$_bann_pat" "$S")"
+    _nb2="$(grep -cE '^ *banner [a-z_]+ ' "$S")"
+    if [ "$_lit" != "0" ]; then
+        bad "主脚本残留 $_lit 处手写 step \"[N/M]\" 横幅 —— 编号该交回 banner 派生"
+    elif [ "$_nb2" != "$_x_total" ]; then
+        bad "banner 调用数($_nb2)≠ 步骤数($_x_total) —— 有一步打不出横幅, 或多出野横幅"
+    else
+        pass "步骤横幅全部由表派生($_nb2 处 banner, 零手写编号)"
+    fi
+
+    # 文档里写死的步数 = 人判断"到底跑完没有"的依据, 漂了会误导(历史上漂过 12→14→16)
+    _doc_pat='(必装|走完|看必装|顺序跑完|跑完) [0-9]+ 步|[0-9]+ 步, 断点续传|必装主线（[0-9]+ 步）'
+    _doc_n="$(
+        {
+            grep -rhoE "$_doc_pat" README.md 使用说明.txt 重装流程.md steamos.sh \
+                      重装后先运行我.sh 2>/dev/null | grep -oE '[0-9]+'
+            # "步骤 1~16" 是区间写法, 步数在波浪号后面 —— 只取上界, 别把 1 也算进去
+            grep -rhoE '步骤 1~[0-9]+' README.md 使用说明.txt 2>/dev/null | sed -n 's/^步骤 1~//p'
+        } | sort -u | tr -d '\n'
+    )"
+    if [ -z "$_doc_n" ]; then
+        bad "一条'N 步'都没扫到 —— 本断言的写法已过时, 它现在等于没检查"
+    elif [ "$_doc_n" != "$_x_total" ]; then
+        bad "文档里的步数[$_doc_n]与表的[$_x_total]不一致(grep -rn '[0-9]* 步' 自查)"
+    else
+        pass "文档里写死的步数全部 = $_x_total(与表一致)"
+    fi
+    _rn="$(grep -c '^| [0-9]\+ |' README.md)"
+    if [ "$_rn" = "$_x_total" ]; then
+        pass "README 必装主线表 $_rn 行 = 表步数(没有漏登记或多余行)"
+    else
+        bad "README 主线表 $_rn 行 ≠ 表步数 $_x_total —— 加/删步骤忘了同步 README"
+    fi
+    # 维护手册 §1.1 的导读表 + 它声明的主脚本行数(数字声明最容易漂, 用容差而不是相等:
+    #   那里写的是"约 N 行", 要求逐字相等会让人懒得更新)
+    _mr="$(grep -c '^| `[0-9]\+`/`' SCRIPT-MAINTENANCE.md)"
+    if [ "$_mr" = "$_x_total" ]; then
+        pass "维护手册 §1.1 导读表 $_mr 行 = 表步数"
+    else
+        bad "维护手册 §1.1 导读表 $_mr 行 ≠ 表步数 $_x_total —— 同步一下那张表"
+    fi
+    _decl="$(sed -n 's/^### 1\.1 主脚本.*（约 \([0-9]\+\) 行.*/\1/p' SCRIPT-MAINTENANCE.md | head -1)"
+    # 用 wc -l 而不是 grep -c . —— 后者数的是**非空行**, 会少报 200 行(写这条时踩到)
+    _real="$(wc -l < "$S" | tr -d ' ')"
+    if [ -z "$_decl" ]; then
+        bad "从 §1.1 标题里抽不出'约 N 行' —— 本断言已失效(标题格式变了?)"
+    elif [ "$_decl" -lt $((_real * 9 / 10)) ] || [ "$_decl" -gt $((_real * 11 / 10)) ]; then
+        bad "维护手册说主脚本约 $_decl 行, 实测 $_real 行(差超 10%) —— 改一下那个数字"
+    else
+        pass "维护手册说约 $_decl 行, 实测 $_real 行(在 ±10% 内)"
+    fi
+fi
 # 2.16 统一入口 steamos.sh(2026-09-27): 菜单/清单/帮助/分发全部由**一张注册表**派生,
 #      所以核心不变量就是"注册表 ↔ 文件"双向一致。这两种漂移都真实发生过:
 #        · 加了脚本没登记 → 它躺在目录里, 却没有任何入口指向它(人找不到 = 等于不存在)
@@ -877,14 +1099,26 @@ for c in shellcheck ./tools/shellcheck ./tools/shellcheck.exe; do
     if command -v "$c" >/dev/null 2>&1 && "$c" --version >/dev/null 2>&1; then SC="$c"; break; fi
 done
 if [ -n "$SC" ]; then
-    n=0
+    n=0; _screp=""
     while IFS= read -r f; do
-        case "$f" in ./archive/*|./disabled/*|./steamos-nix/*) continue ;; esac
-        c="$("$SC" -S warning -f gcc "$f" 2>/dev/null | grep -c 'SC[0-9]')"
-        [ -n "$c" ] && n=$((n + c))
+        skip_dir "$f" && continue
+        case "$f" in ./steamos-nix/*) continue ;; esac   # 冻结分支豁免 lint(语法仍扫, 见 skip_dir)
+        hits="$("$SC" -S warning -f gcc "$f" 2>/dev/null | grep 'SC[0-9]')"
+        c="$(printf '%s\n' "$hits" | grep -c 'SC[0-9]')"
+        if [ "$c" -gt 0 ]; then
+            n=$((n + c))
+            _screp="$_screp$hits
+"
+        fi
     done < <(find . -type f -name "*.sh" -not -path "./.git/*")
-    [ "$n" -eq 0 ] && pass "shellcheck warning 级 = 0 (全部脚本)" \
-                   || bad "shellcheck 发现 $n 个 warning 级问题"
+    # 以前只报"发现 N 个", 不给是哪几个 —— 2026-09-27 复现时就只能手工把
+    # 整个循环再跑一遍。红项必须自带指路。
+    if [ "$n" -eq 0 ]; then
+        pass "shellcheck warning 级 = 0 (全部脚本)"
+    else
+        bad "shellcheck 发现 $n 个 warning 级问题"
+        printf '%s' "$_screp" | sed '/^$/d; s/^/        /'
+    fi
 else
     echo "  [i] 没有**能跑**的 shellcheck —— 放一个本机架构的到 tools/shellcheck 即可启用;"
     echo "      tools/shellcheck.exe 是 Windows 二进制, Linux 上跑不了(跳过 ≠ 通过);"

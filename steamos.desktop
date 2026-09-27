@@ -10,7 +10,9 @@ Comment=一个入口就够了：体检 / 重装 / 升级恢复 / 应用便携化
 #     (TryExec 找不到就被隐藏, 双击也没用)。命令本身是 shell 脚本, 不该拿终端卡它。
 #   · 用 Terminal=true 而不是在 Exec 里硬写 konsole —— 让桌面环境自己挑默认终端。
 # 图标刻意用 utilities-terminal(任何图标主题都有), 不新增图标依赖。
-# ⚠️ 从 Windows / 网盘 / U 盘 拷回来会丢执行位, 双击会没反应 → 先 chmod +x *.sh *.desktop
+# ⚠️ 本文件属「目录形态」: 从 Windows/网盘/U盘 拷来的整个目录会丢执行位, 双击没反应,
+#    要先 chmod +x *.sh *.desktop。用单文件包 steamos-toolbox-<版本>.run 则不需要
+#    (执行位写在包内 tar 元数据里, 安装器自己补齐 —— 这正是 .run 存在的理由)。
 Exec=/bin/bash -c 'd="$(dirname "%k")"; cd "$d" 2>/dev/null || cd "$HOME/Downloads/steamos-reinstall-backup" || exit 1; exec bash ./steamos.sh'
 Terminal=true
 Icon=utilities-terminal

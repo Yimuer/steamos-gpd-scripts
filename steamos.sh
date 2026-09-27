@@ -20,7 +20,7 @@
 #    bash steamos.sh list            # 列出全部命令(脚本友好, 无交互)
 #    bash steamos.sh <命令> [参数…]   # 直接分发, 例: bash steamos.sh doctor
 #    bash steamos.sh selfcheck       # 自检: 注册表↔文件一致 / 跑的是哪一份 / 快照新旧
-#    bash steamos.sh pack            # 打发布包 dist/steamos-toolbox-<版本>.tar.gz
+#    bash steamos.sh pack            # 打发布包: tar.gz + 单文件自安装包 .run
 #    bash steamos.sh dist-verify     # 把发布包解到临时目录实跑一遍(验证自包含)
 #    bash steamos.sh help | version
 #
@@ -119,8 +119,9 @@ REG=(
   "launchopts|set-steam-launchoptions.py||ui|maint|写 Steam 启动选项(自动探测 userid)"
   "upgrade-wb|upgrade-workbuddy-aur.sh||ui|maint|升级 WorkBuddy(AUR)"
   "selfcheck|-||ro|maint|自检: 注册表↔文件一致 / 跑的是哪一份 / 快照是否落后"
-  "pack|-||ro|maint|打成发布包 dist/steamos-toolbox-<版本>.tar.gz (+SHA256SUMS)"
+  "pack|-||ro|maint|打发布包 dist/steamos-toolbox-<版本>.tar.gz + 单文件 .run (+SHA256SUMS)"
   "dist-verify|-||ro|maint|把发布包解到临时目录实跑一遍, 验证它真的自包含"
+  "pack-run|pack-run.sh|--selftest|ro|maint|自测单文件封装器(造玩具包→安装→校验→反例: 偏移/sha/覆盖护栏)"
 )
 
 # ⚠️ 名字别用 `GROUPS` —— 那是 bash 的**特殊变量**(当前用户的组 ID 列表),
@@ -305,7 +306,7 @@ builtin_pack() {
     ver="$(cat VERSION 2>/dev/null || echo 0)"
     out="$HERE/dist/steamos-toolbox-$ver.tar.gz"
     mkdir -p "$HERE/dist" || { err "建不了 dist/"; return 1; }
-    head_ "打包 → dist/steamos-toolbox-$ver.tar.gz"
+    head_ "打包 → dist/steamos-toolbox-$ver.tar.gz + 单文件 .run"
 
     # 成员按"该是什么模式"分两趟显式写进包 (--mode), **不看文件系统位**:
     #   Windows/NTFS 上 chmod 是空操作、网盘/Windows 拷贝会丢执行位(2026-09-27 实测, §13.10.9),
@@ -363,6 +364,22 @@ builtin_pack() {
     info "已生成: $out"
     sub "文件数 $n · 体积 $(du -h "$out" 2>/dev/null | cut -f1)"
     sub "校验和: dist/SHA256SUMS"
+
+    # ── 单文件自安装包(交付物的**主形态**) ────────────────────────────────
+    #   为什么不只给 tar.gz: 那要求用户"解压 + chmod +x"两步手工前置
+    #   (文档里曾有 5 处写着这条, 2026-09-25 那次双击没反应的事故就是它引起的)。
+    #   .run 一个文件拷过去 `bash` 一下即可: 执行位写在 tar 元数据里, 头部自己会
+    #   校验载荷 sha256、拒绝覆盖已有目录、失败时不留半个安装。
+    local run="$HERE/dist/steamos-toolbox-$ver.run"
+    if bash "$HERE/pack-run.sh" "$out" "$run" "$ver"; then
+        ( cd "$HERE/dist" && sha256sum "$(basename "$out")" "$(basename "$run")" > SHA256SUMS ) \
+            || warn "两个产物的校验和没写成(SHA256SUMS)"
+        sub "单文件包: $run"
+    else
+        err "单文件包没打成 —— 发布物不完整(只给 tar.gz 等于把 chmod 的负担丢给用户)"
+        sub "验证: bash $SELF dist-verify"
+        return 1
+    fi
     sub "验证: bash $SELF dist-verify"
     return 0
 }
@@ -445,6 +462,46 @@ builtin_dist_verify() {
         rc=1
     fi
 
+    # ── 6. 单文件包(.run)真装一遍 —— 交付物的主形态必须能被它自己验证 ──
+    #    刻意**不用** tar 手工解压, 而是调用 .run 本身: 只有这样才证明
+    #    "一个文件拷过去, bash 一下就位"这句话是真的(偏移 / sha / 执行位 / 拒绝覆盖)。
+    head_ "单文件包实装: bash <run> --no-run <临时目录>"
+    local run="$HERE/dist/steamos-toolbox-$ver.run" dst_run dl
+    dst_run="$tmp-run"
+    rm -rf "${dst_run:?}"
+    if [ ! -f "$run" ]; then
+        err "没有单文件包: $run —— 重新 pack(只给 tar.gz 等于把 chmod 的负担丢给用户)"
+        rc=1
+    elif ! bash "$run" --no-run "$dst_run" >/dev/null 2>&1; then
+        err ".run 装不上(偏移/sha/解包 出问题了)"
+        sub "手工看原因: bash $run --check; bash $run --list | head"
+        rc=1
+    else
+        info "单文件包装成功(全程没碰过 tar)"
+        if [ -x "$dst_run/steamos.sh" ]; then info "  装出来的入口带执行位"
+        else err "  装出来的 steamos.sh 没有执行位"; rc=1; fi
+        if ( cd "$dst_run" && bash steamos.sh selfcheck >/dev/null 2>&1 ); then
+            info "  装出来的副本自检通过"
+        else
+            err "  装出来的副本自检没过"; rc=1
+        fi
+        # 成员清单逐行对: .run 与 tar.gz 必须是同一份内容
+        #   (唯一允许的差集是 .run 自己写的 .installed-from 安装标记)
+        dl="$tmp/run-members.diff"
+        if diff <(tar -tzf "$tgz" | grep -v '/$' | LC_ALL=C sort) \
+                <( cd "$dst_run" && find . -type f | LC_ALL=C sort ) > "$dl" 2>&1; then
+            info "  成员清单与 tar.gz 一致"
+        elif [ "$(grep -c '^[<>]' "$dl")" -eq 1 ] && grep -q '^> \./\.installed-from$' "$dl"; then
+            info "  成员清单与 tar.gz 一致(多的 1 项是 .run 写的安装标记)"
+        else
+            err "  .run 装出来的内容与 tar.gz 不一致:"
+            sed 's/^/        /' "$dl" | head -10
+            rc=1
+        fi
+        rm -f "$dl"
+    fi
+    rm -rf "${dst_run:?}"
+
     rm -rf "${tmp:?}"
     printf '\n%s══ 结论 ══%s\n' "$C_B" "$C_R"
     if [ "$rc" -eq 0 ]; then info "发布包可用: $(du -h "$tgz" | cut -f1)"; else err "发布包有问题(见上)"; fi
@@ -480,7 +537,7 @@ SteamOS 工具箱 $VERSION —— 全家桶统一入口($HERE)
   bash $SELF list            列出全部命令(脚本友好, 无交互)
   bash $SELF <命令> [参数…]   直接分发, 例: bash $SELF doctor
   bash $SELF selfcheck       自检: 注册表↔文件一致 / 跑的是哪一份 / 快照是否落后
-  bash $SELF pack            打发布包 dist/steamos-toolbox-<版本>.tar.gz
+  bash $SELF pack            打发布包: dist/*.tar.gz + 单文件自安装包 *.run
   bash $SELF dist-verify     把发布包解到临时目录实跑一遍(验证自包含)
   bash $SELF help | version
 
